@@ -252,13 +252,15 @@ class ExecutionInfo:
     Stores information about what is going to happen.
     """
     raw_cell = None
+    transformed_cell = None
     store_history = False
     silent = False
     shell_futures = True
     cell_id = None
 
-    def __init__(self, raw_cell, store_history, silent, shell_futures, cell_id):
+    def __init__(self, raw_cell, store_history, silent, shell_futures, cell_id, transformed_cell=None):
         self.raw_cell = raw_cell
+        self.transformed_cell = transformed_cell
         self.store_history = store_history
         self.silent = silent
         self.shell_futures = shell_futures
@@ -270,11 +272,12 @@ class ExecutionInfo:
             (self.raw_cell[:50] + "..") if len(self.raw_cell) > 50 else self.raw_cell
         )
         return (
-            '<%s object at %x, raw_cell="%s" store_history=%s silent=%s shell_futures=%s cell_id=%s>'
+            '<%s object at %x, raw_cell="%s" transformed_cell="%s" store_history=%s silent=%s shell_futures=%s cell_id=%s>'
             % (
                 name,
                 id(self),
                 raw_cell,
+                (self.transformed_cell[:50] + "..") if self.transformed_cell and len(self.transformed_cell) > 50 else self.transformed_cell,
                 self.store_history,
                 self.silent,
                 self.shell_futures,
@@ -3153,7 +3156,7 @@ class InteractiveShell(SingletonConfigurable):
             result = runner(coro)
         except BaseException as e:
             info = ExecutionInfo(
-                raw_cell, store_history, silent, shell_futures, cell_id
+                raw_cell, store_history, silent, shell_futures, cell_id, transformed_cell
             )
             result = ExecutionResult(info)
             result.error_in_exec = e
@@ -3301,6 +3304,9 @@ class InteractiveShell(SingletonConfigurable):
                 cell = transformed_cell
             else:
                 cell = raw_cell
+
+        # Update the info object with the actual transformed cell
+        info.transformed_cell = cell
 
         # Do NOT store paste/cpaste magic history
         if "get_ipython().run_line_magic(" in cell and "paste" in cell:
