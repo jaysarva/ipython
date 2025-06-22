@@ -176,6 +176,13 @@ class ModuleReloader:
 
         # To hide autoreload errors
         self.hide_errors = False
+        
+        try:
+            from .deduperreload.traceback_patch import patch_traceback_formatting, set_deduperreloader
+            patch_traceback_formatting()
+            set_deduperreloader(self.deduper_reloader)
+        except ImportError:
+            pass
 
     def mark_module_skipped(self, module_name):
         """Skip reloading the named module in the future"""

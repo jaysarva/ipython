@@ -182,6 +182,7 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
         self.source_by_modname: dict[str, str] = {}
         self.dependency_graph: dict[tuple[str, ...], list[DependencyNode]] = {}
         self._enabled = True
+        self._original_filenames: dict[int, str] = {}
 
     @property
     def enabled(self) -> bool:
@@ -445,19 +446,17 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
                 if not isinstance(global_env, dict):
                     global_env = dict(global_env)
 
-                # Compile with correct filename and line number to preserve traceback info
-                filename = (
-                    getattr(to_patch_to, "__code__", None)
-                    and to_patch_to.__code__.co_filename
-                    or "<string>"
-                )
-                lineno = getattr(new_ast_def, "lineno", 1)
-                # Adjust the source code to include proper line number information
-                # We need to add empty lines to match the original line number
-                adjusted_func_code = "\n" * (lineno - 1) + func_code
-                compiled_code = compile(
-                    adjusted_func_code, filename, "exec", dont_inherit=True
-                )
+                original_filename = None
+                if hasattr(to_patch_to, "__code__") and not isinstance(to_patch_to, property):
+                    original_filename = to_patch_to.__code__.co_filename
+                elif isinstance(to_patch_to, property):
+                    for attr in ("fget", "fset", "fdel"):
+                        prop_func = getattr(to_patch_to, attr, None)
+                        if prop_func and hasattr(prop_func, "__code__"):
+                            original_filename = prop_func.__code__.co_filename
+                            break
+                
+                compiled_code = compile(func_code, "<string>", "exec", dont_inherit=True)
                 exec(compiled_code, global_env, local_env)
                 # local_env contains the function exec'd from  new version of function
                 if is_method:
@@ -476,14 +475,19 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
                         ):
                             self.try_patch_attr(to_patch_to, to_patch_from, attr)
                         else:
+                            patched_func = getattr(to_patch_from, attr)
+                            if original_filename and hasattr(patched_func, "__code__"):
+                                self._store_original_filename(patched_func, original_filename)
                             self.patch_function(
                                 getattr(to_patch_to, attr),
-                                getattr(to_patch_from, attr),
+                                patched_func,
                                 is_method,
                             )
                 elif not isinstance(to_patch_to, property) and not isinstance(
                     to_patch_from, property
                 ):
+                    if original_filename and hasattr(to_patch_from, "__code__"):
+                        self._store_original_filename(to_patch_from, original_filename)
                     self.patch_function(to_patch_to, to_patch_from, is_method)
                 else:
                     raise ValueError(
@@ -620,3 +624,12 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
         Currently, only returns `true` as we do not block on failure to build this graph.
         """
         return self._gather_dependents(new_ast.body)
+    
+    def _store_original_filename(self, func, original_filename):
+        """Store the original filename for a patched function."""
+        if hasattr(func, "__code__"):
+            self._original_filenames[id(func.__code__)] = original_filename
+    
+    def get_original_filename(self, code_obj):
+        """Get the original filename for a code object if it was patched."""
+        return self._original_filenames.get(id(code_obj))
