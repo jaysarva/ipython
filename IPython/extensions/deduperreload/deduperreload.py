@@ -629,6 +629,11 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
         """Store the original filename for a patched function."""
         if hasattr(func, "__code__"):
             self._original_filenames[id(func.__code__)] = original_filename
+
+            import linecache
+
+            if original_filename and original_filename != "<string>":
+                linecache.getlines(original_filename)
     
     def get_original_filename(self, code_obj):
         """Get the original filename for a code object if it was patched."""
