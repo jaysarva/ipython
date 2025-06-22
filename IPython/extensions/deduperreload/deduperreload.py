@@ -447,7 +447,9 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
                     global_env = dict(global_env)
 
                 original_filename = None
-                if hasattr(to_patch_to, "__code__") and not isinstance(to_patch_to, property):
+                if hasattr(to_patch_to, "__code__") and not isinstance(
+                    to_patch_to, property
+                ):
                     original_filename = to_patch_to.__code__.co_filename
                 elif isinstance(to_patch_to, property):
                     for attr in ("fget", "fset", "fdel"):
@@ -455,8 +457,10 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
                         if prop_func and hasattr(prop_func, "__code__"):
                             original_filename = prop_func.__code__.co_filename
                             break
-                
-                compiled_code = compile(func_code, "<string>", "exec", dont_inherit=True)
+
+                compiled_code = compile(
+                    func_code, "<string>", "exec", dont_inherit=True
+                )
                 exec(compiled_code, global_env, local_env)
                 # local_env contains the function exec'd from  new version of function
                 if is_method:
@@ -477,7 +481,9 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
                         else:
                             patched_func = getattr(to_patch_from, attr)
                             if original_filename and hasattr(patched_func, "__code__"):
-                                self._store_original_filename(patched_func, original_filename)
+                                self._store_original_filename(
+                                    patched_func, original_filename
+                                )
                             self.patch_function(
                                 getattr(to_patch_to, attr),
                                 patched_func,
@@ -624,7 +630,7 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
         Currently, only returns `true` as we do not block on failure to build this graph.
         """
         return self._gather_dependents(new_ast.body)
-    
+
     def _store_original_filename(self, func, original_filename):
         """Store the original filename for a patched function."""
         if hasattr(func, "__code__"):
@@ -634,7 +640,7 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
 
             if original_filename and original_filename != "<string>":
                 linecache.getlines(original_filename)
-    
+
     def get_original_filename(self, code_obj):
         """Get the original filename for a code object if it was patched."""
         return self._original_filenames.get(id(code_obj))

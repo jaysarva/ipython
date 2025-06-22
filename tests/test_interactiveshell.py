@@ -626,7 +626,6 @@ class TestSafeExecfileNonAsciiPath(unittest.TestCase):
 
 
 class ExitCodeChecks(tt.TempFileMixin):
-
     def setUp(self):
         self.system = ip.system_raw
 
@@ -662,7 +661,6 @@ class ExitCodeChecks(tt.TempFileMixin):
 
 
 class TestSystemRaw(ExitCodeChecks):
-
     def setUp(self):
         super().setUp()
         self.system = ip.system_raw
@@ -705,7 +703,6 @@ def test_magic_warnings(magic_cmd):
 
 # TODO: Exit codes are currently ignored on Windows.
 class TestSystemPipedExitCode(ExitCodeChecks):
-
     def setUp(self):
         super().setUp()
         self.system = ip.system_piped
@@ -818,7 +815,6 @@ class TestAstTransform(unittest.TestCase):
 
 
 class TestMiscTransform(unittest.TestCase):
-
     def test_transform_only_once(self):
         cleanup = 0
         line_t = 0
@@ -942,7 +938,6 @@ class StringRejector(ast.NodeTransformer):
 
 
 class TestAstTransformInputRejection(unittest.TestCase):
-
     def setUp(self):
         self.transformer = StringRejector()
         ip.ast_transformers.append(self.transformer)
@@ -1104,7 +1099,6 @@ def wrn():
 
 
 class TestImportNoDeprecate(tt.TempFileMixin):
-
     def setUp(self):
         """Make a valid python temp file."""
         self.mktmp(

@@ -354,7 +354,6 @@ def test_unicode_in_filename():
 
 
 class TestShellGlob(unittest.TestCase):
-
     @classmethod
     def setUpClass(cls):
         cls.filenames_start_with_a = ["a0", "a1", "a2"]
