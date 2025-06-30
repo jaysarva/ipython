@@ -1,0 +1,8 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+Use ```workon ipy``` to use the right environment, and ```pytest``` to run tests. 
+
+Run this at the very end to do linting. Only run it once all other changes are made. ```darker -r 60625f241f298b5039cb2debc365db38aa7bb522 file```

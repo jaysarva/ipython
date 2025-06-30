@@ -8,7 +8,7 @@ import platform
 import sys
 import textwrap
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Generator, Iterable, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Generator, Iterable, NamedTuple, Optional, Union, cast
 
 from IPython.extensions.deduperreload.deduperreload_patching import (
     DeduperReloaderPatchingMixin,
@@ -167,6 +167,14 @@ class AutoreloadTree:
         return cur
 
 
+class LineMapping(NamedTuple):
+    """Represents a line number mapping for traceback patching."""
+    original_filename: str
+    original_lineno: int
+    new_filename: Optional[str]
+    new_lineno: Optional[int]
+
+
 class DeduperReloader(DeduperReloaderPatchingMixin):
     """
     This version of autoreload detects when we can leverage targeted recompilation of a subset of a module and patching
@@ -182,6 +190,9 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
         self.source_by_modname: dict[str, str] = {}
         self.dependency_graph: dict[tuple[str, ...], list[DependencyNode]] = {}
         self._enabled = True
+        # Track line number mappings for traceback patching
+        self.line_mappings: dict[tuple[str, int], tuple[Optional[str], Optional[int]]] = {}
+        self.traceback_patching_enabled = True
 
     @property
     def enabled(self) -> bool:
@@ -190,6 +201,72 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
     @enabled.setter
     def enabled(self, value: bool) -> None:
         self._enabled = value
+        # Reset line mappings when disabling deduperreload
+        if not value:
+            self.line_mappings.clear()
+            self.traceback_patching_enabled = False
+        else:
+            self.traceback_patching_enabled = True
+
+    def _calculate_line_mappings(
+        self, 
+        filename: str, 
+        old_ast: ast.Module, 
+        new_ast: ast.Module
+    ) -> dict[tuple[str, int], tuple[Optional[str], Optional[int]]]:
+        """
+        Calculate line number mappings between old and new AST.
+        This handles trickle-down effects where unchanged functions shift line numbers.
+        """
+        mappings = {}
+        
+        # Get all function and class definitions with their line numbers
+        old_defs = self._get_all_definitions(old_ast)
+        new_defs = self._get_all_definitions(new_ast)
+        
+        # Create mapping based on name matches
+        for name, old_lineno in old_defs.items():
+            if name in new_defs:
+                new_lineno = new_defs[name]
+                if old_lineno != new_lineno:
+                    # Line number changed - add to mapping
+                    mappings[(filename, old_lineno)] = (None, new_lineno)
+            else:
+                # Function/class was removed - keep original mapping
+                mappings[(filename, old_lineno)] = (None, old_lineno)
+                
+        return mappings
+    
+    def _get_all_definitions(self, node: ast.Module) -> dict[str, int]:
+        """Get all function and class definitions with their line numbers."""
+        definitions = {}
+        
+        class DefinitionVisitor(ast.NodeVisitor):
+            def visit_FunctionDef(self, node):
+                definitions[node.name] = node.lineno
+                self.generic_visit(node)
+                
+            def visit_AsyncFunctionDef(self, node):
+                definitions[node.name] = node.lineno
+                self.generic_visit(node)
+                
+            def visit_ClassDef(self, node):
+                definitions[node.name] = node.lineno
+                self.generic_visit(node)
+        
+        visitor = DefinitionVisitor()
+        visitor.visit(node)
+        return definitions
+
+    def get_traceback_patches(self) -> dict[tuple[str, int], tuple[str | None, int | None]]:
+        """Get current line mappings for traceback patching."""
+        if self.traceback_patching_enabled:
+            return self.line_mappings.copy()
+        return {}
+
+    def clear_traceback_patches(self) -> None:
+        """Clear all traceback patches."""
+        self.line_mappings.clear()
 
     def update_sources(self) -> None:
         """
@@ -563,6 +640,13 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
                     and self._patch_namespace(module)
                 ):
                     patched_flag = True
+                    
+                    # Calculate and store line mappings for traceback patching
+                    if self.traceback_patching_enabled:
+                        new_mappings = self._calculate_line_mappings(
+                            fname, old_module_ast, new_module_ast
+                        )
+                        self.line_mappings.update(new_mappings)
 
         self.source_by_modname[modname] = new_source_code
         self._to_autoreload = AutoreloadTree()

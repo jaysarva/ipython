@@ -108,6 +108,7 @@ Some of the known remaining caveats are:
 from IPython.core import magic_arguments
 from IPython.core.magic import Magics, magics_class, line_magic
 from IPython.extensions.deduperreload.deduperreload import DeduperReloader
+from IPython.utils.traceback_patcher import PatchedTB
 
 __skip_doctest__ = True
 
@@ -171,11 +172,60 @@ class ModuleReloader:
         # Deduper reloader
         self.deduper_reloader = DeduperReloader()
 
+        # Traceback patching integration
+        self._patched_tb_formatter = None
+        self._original_tb_formatter = None
+        self._setup_traceback_patching()
+
         # Cache module modification times
         self.check(check_all=True, do_reload=False)
 
         # To hide autoreload errors
         self.hide_errors = False
+
+    def _setup_traceback_patching(self):
+        """Set up traceback patching integration with IPython."""
+        if self.shell and hasattr(self.shell, 'InteractiveTB'):
+            # Store the original traceback formatter
+            self._original_tb_formatter = self.shell.InteractiveTB
+            # Create a patched version that will be updated with line mappings
+            self._update_traceback_formatter()
+
+    def _update_traceback_formatter(self):
+        """Update the traceback formatter with current line mappings."""
+        if not self.shell or not hasattr(self.shell, 'InteractiveTB'):
+            return
+            
+        # Get current line mappings from deduperreload
+        patches = self.deduper_reloader.get_traceback_patches()
+        
+        if patches and self.deduper_reloader.traceback_patching_enabled:
+            # Create or update the patched formatter
+            if not isinstance(self.shell.InteractiveTB, PatchedTB):
+                # Replace with patched version
+                original_formatter = self.shell.InteractiveTB
+                mode = getattr(original_formatter, 'mode', 'Context')
+                theme_name = getattr(original_formatter, 'theme_name', 'linux')
+                
+                self._patched_tb_formatter = PatchedTB(
+                    patches, 
+                    mode=mode, 
+                    theme_name=theme_name
+                )
+                self.shell.InteractiveTB = self._patched_tb_formatter
+            else:
+                # Update existing patched formatter
+                if self._patched_tb_formatter:
+                    self._patched_tb_formatter._patches = patches
+        else:
+            # Restore original formatter if no patches or patching disabled
+            if self._original_tb_formatter and isinstance(self.shell.InteractiveTB, PatchedTB):
+                self.shell.InteractiveTB = self._original_tb_formatter
+
+    def _restore_original_traceback_formatter(self):
+        """Restore the original traceback formatter."""
+        if self.shell and self._original_tb_formatter:
+            self.shell.InteractiveTB = self._original_tb_formatter
 
     def mark_module_skipped(self, module_name):
         """Skip reloading the named module in the future"""
@@ -278,7 +328,8 @@ class ModuleReloader:
                         superreload(m, reload, self.old_objects, self.shell)
                     # if not using autoload, check if deduperreload is viable for this module
                     elif self.deduper_reloader.maybe_reload_module(m):
-                        pass
+                        # Update traceback formatter with new line mappings
+                        self._update_traceback_formatter()
                     else:
                         superreload(m, reload, self.old_objects)
                     if py_filename in self.failed:
@@ -644,7 +695,17 @@ class AutoreloadMagics(Magics):
         if mode.endswith("-"):
             enable_deduperreload = False
             mode = mode[:-1]
+        
+        # Update deduperreload settings and handle traceback patching
+        was_enabled = self._reloader.deduper_reloader.enabled
         self._reloader.deduper_reloader.enabled = enable_deduperreload
+        
+        # If switching from deduperreload to superreload, restore original traceback formatter
+        if was_enabled and not enable_deduperreload:
+            self._reloader._restore_original_traceback_formatter()
+        # If switching to deduperreload, set up traceback patching
+        elif not was_enabled and enable_deduperreload:
+            self._reloader._setup_traceback_patching()
 
         p = print
 
