@@ -13,6 +13,9 @@ from typing import TYPE_CHECKING, Any, Generator, Iterable, NamedTuple, cast
 from IPython.extensions.deduperreload.deduperreload_patching import (
     DeduperReloaderPatchingMixin,
 )
+from IPython.extensions.deduperreload.line_number_patcher import (
+    LineNumberPatcher,
+)
 
 if TYPE_CHECKING:
     TDefinitionAst = (
@@ -182,6 +185,8 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
         self.source_by_modname: dict[str, str] = {}
         self.dependency_graph: dict[tuple[str, ...], list[DependencyNode]] = {}
         self._enabled = True
+        self.line_patcher = LineNumberPatcher()
+        self.enable_line_number_patching = True  # Feature flag
 
     @property
     def enabled(self) -> bool:
@@ -415,6 +420,17 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
         namespace_to_check = ns
         for prefix in prefixes:
             namespace_to_check = namespace_to_check.__dict__[prefix]
+
+        # Track reloaded code objects for line number patching
+        reloaded_code_objects = set()
+        root_module: ModuleType | type | None = None
+        # Get the root module for line number patching
+        if isinstance(ns, ModuleType):
+            root_module = ns
+        else:
+            # For class types, get the module they belong to
+            module_name = getattr(ns, "__module__", "")
+            root_module = sys.modules.get(module_name) if module_name else ns
         for names, new_ast_def in cur.defs_to_reload:
             local_env: dict[str, Any] = {}
             if (
@@ -422,7 +438,11 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
                 and (name := names[0]) in namespace_to_check.__dict__
             ):
                 assert len(names) == 1
-                to_patch_to = namespace_to_check.__dict__[name]
+                to_patch_to: Any = namespace_to_check.__dict__[name]
+
+                # Track this function for line number patching
+                qualified_name = ".".join(prefixes + [name]) if prefixes else name
+                reloaded_code_objects.add(qualified_name)
                 if isinstance(to_patch_to, (staticmethod, classmethod)):
                     to_patch_to = to_patch_to.__func__
                 # exec new source code using old function's (obj) globals environment.
@@ -481,6 +501,9 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
                 )
                 for name in names:
                     setattr(namespace_to_check, name, local_env[name])
+                    # Track non-function definitions for line number patching
+                    qualified_name = ".".join(prefixes + [name]) if prefixes else name
+                    reloaded_code_objects.add(qualified_name)
         cur.defs_to_reload.clear()
         for name in cur.defs_to_delete:
             try:
@@ -502,6 +525,26 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
             if not self._patch_namespace(ns, prefixes + [class_name]):
                 return False
         cur.children.clear()
+
+        # NEW: Update line numbers after patching (only at root level)
+        # Key insight: ANY change to a module can shift line numbers of ALL code objects
+        if (
+            not prefixes
+            and self.enable_line_number_patching
+            and isinstance(root_module, ModuleType)
+        ):
+            try:
+                # Instead of just using reloaded_code_objects, update ALL code objects
+                # since any change can shift line numbers
+                self.line_patcher.update_all_code_object_line_numbers(
+                    root_module, [], force_update=True
+                )
+            except Exception as e:
+                # Line number patching is optional - don't break main functionality
+                import warnings
+
+                warnings.warn(f"Line number patching failed: {e}")
+
         return True
 
     def _patch_namespace(

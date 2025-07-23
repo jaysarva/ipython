@@ -9,6 +9,7 @@ import shutil
 import sys
 import tempfile
 import textwrap
+import traceback
 import time
 import unittest
 from types import ModuleType
@@ -2305,6 +2306,43 @@ class TestAutoreloadEnum(ShellFixture):
         )
         self.shell.run_code("pass")
         assert mod.MyEnum.C.value == "C"
+
+
+class TestAutoreloadTraceback(ShellFixture):
+    def test_traceback_line_numbers(self):
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def foo():
+                return 42/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        try:
+            mod.foo()
+            assert False  # Should not reach here.
+        except ZeroDivisionError as e:
+            exception_string = traceback.format_exc()
+            assert "line 2" in exception_string
+
+        self.write_file(
+            mod_fn,
+            """
+            def bar():
+                return 42
+            def foo():
+                return 42/0
+            """,
+        )
+        self.shell.run_code("pass")  # Trigger autoreload check
+        try:
+            mod.foo()
+            assert False  # Should not reach here.
+        except ZeroDivisionError as e:
+            exception_string = traceback.format_exc()
+            assert "line 4" in exception_string
 
 
 if __name__ == "__main__":
