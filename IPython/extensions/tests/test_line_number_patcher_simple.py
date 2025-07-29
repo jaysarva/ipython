@@ -19,6 +19,111 @@ from IPython.extensions.deduperreload.line_number_tracker import (
     ModuleSourceTracker,
 )
 
+"""Simple tests for line number patcher encoding/decoding functionality."""
+
+# mypy: ignore-errors
+# pyright: reportMissingImports=false, reportAttributeAccessIssue=false
+
+import pytest  # type: ignore
+
+import IPython.extensions.deduperreload.line_table_patching.line_table_patcher as _ltp
+
+# Import the new functions
+encode_lnotab = _ltp.encode_lnotab  # type: ignore[attr-defined]
+encode_linetable = _ltp.encode_linetable  # type: ignore[attr-defined]
+parse_lnotab = _ltp.parse_lnotab  # type: ignore[attr-defined]
+parse_linetable = _ltp.parse_linetable  # type: ignore[attr-defined]
+
+# ULEB/SLEB helpers
+_encode_uleb128 = _ltp._encode_uleb128  # type: ignore[attr-defined]
+_decode_uleb128 = _ltp._decode_uleb128  # type: ignore[attr-defined]
+_encode_sleb128 = _ltp._encode_sleb128  # type: ignore[attr-defined]
+_decode_sleb128 = _ltp._decode_sleb128  # type: ignore[attr-defined]
+
+
+class TestUlebSlebSimple:
+    """Simple tests for ULEB128/SLEB128 encoding."""
+
+    def test_uleb128_small_values(self):
+        """Test ULEB128 with small values."""
+        for i in range(128):
+            encoded = _encode_uleb128(i)
+            decoded, consumed = _decode_uleb128(encoded)
+            assert decoded == i
+            assert consumed == 1  # Should be single byte for small values
+
+    def test_sleb128_small_values(self):
+        """Test SLEB128 with small values."""
+        for i in range(-64, 64):
+            encoded = _encode_sleb128(i)
+            decoded, consumed = _decode_sleb128(encoded)
+            assert decoded == i
+            assert consumed == 1  # Should be single byte for small values
+
+    def test_uleb128_boundary_values(self):
+        """Test ULEB128 at byte boundaries."""
+        test_values = [0, 127, 128, 255, 256, 16383, 16384]
+        for value in test_values:
+            encoded = _encode_uleb128(value)
+            decoded, consumed = _decode_uleb128(encoded)
+            assert decoded == value
+
+
+class TestEncodeDecodeSimple:
+    """Simple tests for encode/decode functions."""
+
+    def test_encode_lnotab_simple(self):
+        """Test simple lnotab encoding."""
+        pairs = [(0, 10), (2, 11), (4, 12)]
+        encoded = encode_lnotab(pairs)
+        decoded = parse_lnotab(encoded, 10)
+        assert decoded == pairs
+
+    def test_encode_linetable_simple(self):
+        """Test simple linetable encoding."""
+        pairs = [(0, 10), (2, 11), (4, 12)]
+        encoded = encode_linetable(pairs)
+        decoded = parse_linetable(encoded, 10)
+        assert decoded == pairs
+
+    def test_empty_inputs(self):
+        """Test encoding with empty inputs."""
+        assert encode_lnotab([]) == b''
+        assert encode_linetable([]) == b''
+        
+        assert parse_lnotab(b'', 100) == [(0, 100)]
+        assert parse_linetable(b'', 100) == [(0, 100)]
+
+    def test_single_entry(self):
+        """Test with single entry (should produce empty encoding)."""
+        pairs = [(0, 100)]
+        
+        assert encode_lnotab(pairs) == b''
+        assert encode_linetable(pairs) == b''
+
+
+class TestRoundtripSimple:
+    """Simple roundtrip tests."""
+
+    def test_basic_roundtrip(self):
+        """Test basic encode/decode roundtrip."""
+        test_cases = [
+            [(0, 1), (2, 2), (4, 3)],
+            [(0, 100), (10, 105), (20, 110)],
+            [(0, 50), (5, 55), (10, 50), (15, 60)],  # includes line going backward
+        ]
+        
+        for pairs in test_cases:
+            # lnotab roundtrip
+            lnotab_encoded = encode_lnotab(pairs)
+            lnotab_decoded = parse_lnotab(lnotab_encoded, pairs[0][1])
+            assert lnotab_decoded == pairs
+            
+            # linetable roundtrip
+            linetable_encoded = encode_linetable(pairs)
+            linetable_decoded = parse_linetable(linetable_encoded, pairs[0][1])
+            assert linetable_decoded == pairs
+
 
 class TestLineNumberPatcherBasic:
     """Basic tests for LineNumberPatcher functionality."""
@@ -106,7 +211,7 @@ class TestLineNumberPatcherBasic:
 
         # Mock the patching method to avoid ctypes complexity
         with patch.object(patcher, "try_patch_attr") as mock_patch:
-            result = patcher.patch_single_code_object_lines(test_function, new_line)
+            result = patcher.patch_single_code_object_lines(test_function, new_line, "test_function")
 
         assert result is True
         mock_patch.assert_called_once()
@@ -114,7 +219,9 @@ class TestLineNumberPatcherBasic:
         # Check that the new code object was created with correct line number
         args, kwargs = mock_patch.call_args
         assert kwargs.get("new_is_value") is True
-        assert args[1].co_firstlineno == new_line
+        assert args[0] == test_function  # old object
+        assert args[2] == "__code__"  # field name
+        assert args[1].co_firstlineno == new_line  # new code object
 
     def test_patch_single_code_object_lines_exception(self):
         """Test exception handling in patching."""
@@ -128,7 +235,7 @@ class TestLineNumberPatcherBasic:
         ), warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
 
-            result = patcher.patch_single_code_object_lines(test_function, 100)
+            result = patcher.patch_single_code_object_lines(test_function, 100, "test_function")
 
         assert result is False
         assert len(w) == 1
@@ -236,7 +343,7 @@ def test_real_line_patching():
     new_line = original_line + 50
 
     # Test actual patching (this will use ctypes)
-    success = patcher.patch_single_code_object_lines(test_function, new_line)
+    success = patcher.patch_single_code_object_lines(test_function, new_line, "test_function")
 
     # The success depends on the environment, but should handle gracefully
     assert isinstance(success, bool)

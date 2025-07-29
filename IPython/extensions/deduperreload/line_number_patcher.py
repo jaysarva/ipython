@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import ast
 import inspect
+import sys
+import types
 import warnings
 from types import ModuleType, FunctionType, MethodType
 from typing import Dict, List, Set, Optional, Any, Tuple, Union
@@ -37,6 +39,7 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
         self.source_tracker = ModuleSourceTracker()
         self.patch_cache: Dict[int, int] = {}  # obj_id -> offset_used
         self.enable_line_number_patching = True  # Feature flag
+        self._current_positions: Dict[str, CodePosition] | None = None
 
     def calculate_line_shifts(
         self, module: ModuleType, reloaded_functions: Set[str]
@@ -113,6 +116,7 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
             return
 
         # If no shifts and not forcing update, return early (preserves original behavior)
+        #TODO[CLAUDE_COMMENT]: The early return when no shifts and not force_update may miss cases where source positions changed
         if not shifts and not force_update:
             return
 
@@ -122,6 +126,9 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
             current_positions = self.source_tracker.parse_all_code_positions(
                 current_source
             )
+            
+            # Store current positions for use in nested function patching
+            self._current_positions = current_positions
 
             # Find all code objects in the module
             all_code_objects = self.find_all_code_objects_in_module(module)
@@ -138,8 +145,11 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
                 old_line = obj.__code__.co_firstlineno
 
                 if current_line is not None and current_line != old_line:
-                    if self.patch_single_code_object_lines(obj, current_line):
+                    if self.patch_single_code_object_lines(obj, current_line, obj_name):
                         patched_count += 1
+                        
+            # Clean up
+            self._current_positions = None
 
         except Exception as e:
             module_name = getattr(module, "__name__", "<unknown module>")
@@ -252,6 +262,23 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
         if obj_name in current_positions:
             return current_positions[obj_name].start_line
 
+        # Handle property names: MyClass.bad_property.fget -> MyClass.bad_property
+        if obj_name.endswith(('.fget', '.fset', '.fdel')):
+            property_name = obj_name.rsplit('.', 1)[0]  # Remove .fget/.fset/.fdel
+            if property_name in current_positions:
+                # For properties, AST reports the function def line, but co_firstlineno is the decorator line
+                # Need to subtract 1 to get the @property decorator line that matches co_firstlineno
+                #TODO[CLAUDE_COMMENT]: Property handling assumes decorator is always on line before function - this may not be true for multi-line decorators
+                property_pos = current_positions[property_name]
+                return property_pos.start_line - 1
+
+        # Handle static/class method names: MyClass.method.__func__ -> MyClass.method  
+        if obj_name.endswith('.__func__'):
+            method_name = obj_name.rsplit('.', 1)[0]  # Remove .__func__
+            if method_name in current_positions:
+                #TODO[CLAUDE_COMMENT]: Static/class method handling also assumes single-line decorator - needs more robust parsing
+                return current_positions[method_name].start_line - 1
+
         # Try to match by function name for simple cases
         if hasattr(obj, "__name__"):
             func_name = obj.__name__
@@ -267,7 +294,7 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
 
         return None
 
-    def patch_single_code_object_lines(self, obj: Any, new_first_line: int) -> bool:
+    def patch_single_code_object_lines(self, obj: Any, new_first_line: int, obj_name: str) -> bool:
         """
         Patch line numbers for any object with __code__ using ctypes.
 
@@ -280,9 +307,20 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
         """
         try:
             old_code = obj.__code__
+            line_offset = new_first_line - old_code.co_firstlineno
+
+            if line_offset == 0:
+                return True  # No change needed
 
             # Create new code object with updated line numbers
+            # For now, just update co_firstlineno - complete line table updates
+            # would require complex Python 3.11+ co_linetable decoding
+            #TODO[CLAUDE_COMMENT]: Only updating co_firstlineno doesn't fix line tables - traceback line numbers within functions will still be wrong
             new_code = old_code.replace(co_firstlineno=new_first_line)
+            
+            # Also patch nested functions in constants if positions are available
+            if self._current_positions is not None:
+                new_code = self._patch_nested_functions_in_code(new_code, obj, obj_name, self._current_positions)
 
             # Use existing patching mechanism from DeduperReloaderPatchingMixin
             self.try_patch_attr(obj, new_code, "__code__", new_is_value=True)
@@ -301,6 +339,64 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
                 f"Failed to patch line numbers for {getattr(obj, '__name__', obj)}: {e}"
             )
             return False
+
+    def _patch_nested_functions_in_code(self, code_obj, parent_obj, parent_name: str, current_positions: Dict[str, CodePosition]):
+        """
+        Patch line numbers for nested functions within a code object's constants.
+        
+        Args:
+            code_obj: The code object containing nested functions
+            parent_obj: The parent function object (for context)
+            parent_name: Name of the parent function
+            current_positions: Current AST positions
+            
+        Returns:
+            New code object with patched nested function line numbers
+        """
+        try:
+            new_consts = []
+            changed = False
+            
+            for const in code_obj.co_consts:
+                if isinstance(const, types.CodeType) and const.co_name != '<module>':
+                    # This is a nested function - find its correct line number
+                    nested_name = f"{parent_name}.{const.co_name}"
+                    
+                    if nested_name in current_positions:
+                        new_line = current_positions[nested_name].start_line
+                        old_line = const.co_firstlineno
+                        
+                        if new_line != old_line:
+                            new_nested_code = const.replace(co_firstlineno=new_line)
+                            # Recursively patch deeper nested functions
+                            #TODO[CLAUDE_COMMENT]: Nested function patching is complex - consider if this level of recursion is necessary
+                            new_nested_code = self._patch_nested_functions_in_code(
+                                new_nested_code, parent_obj, nested_name, current_positions
+                            )
+                            new_consts.append(new_nested_code)
+                            changed = True
+                        else:
+                            # Recursively check for deeper nesting even if this level doesn't change
+                            new_nested_code = self._patch_nested_functions_in_code(
+                                const, parent_obj, nested_name, current_positions
+                            )
+                            new_consts.append(new_nested_code)
+                            if new_nested_code != const:
+                                changed = True
+                    else:
+                        new_consts.append(const)
+                else:
+                    new_consts.append(const)
+            
+            # Return code object with updated constants if anything changed
+            if changed:
+                return code_obj.replace(co_consts=tuple(new_consts))
+            else:
+                return code_obj
+                
+        except Exception as e:
+            # Return original code object if patching fails
+            return code_obj
 
     def patch_function_with_closure(self, func: FunctionType, new_code: Any) -> bool:
         """
@@ -354,6 +450,7 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
         """
         # This is a simplified implementation
         # In practice, this would need more sophisticated logic
+        #TODO[CLAUDE_COMMENT]: merge_closures implementation is too simplistic - needs proper variable name matching
         merged = {}
 
         if old_closure:
@@ -379,9 +476,8 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
             obj.__code__ = new_code
             return True
         except (AttributeError, TypeError, ValueError):
-            # Try ctypes patching (already attempted in calling function)
+            # Try using the existing patching mechanism
             try:
-                # Try using the existing patching mechanism
                 self.try_patch_attr(obj, new_code, "__code__", new_is_value=True)
                 return True
             except Exception:

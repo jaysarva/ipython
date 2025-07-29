@@ -2309,6 +2309,7 @@ class TestAutoreloadEnum(ShellFixture):
 
 
 class TestAutoreloadTraceback(ShellFixture):
+    #TODO[CLAUDE_COMMENT]: Tests are checking string content in traceback which is fragile - consider checking actual line numbers
     def test_traceback_line_numbers(self):
         self.shell.magic_autoreload("2")
         mod_name, mod_fn = self.new_module(
@@ -2343,6 +2344,1099 @@ class TestAutoreloadTraceback(ShellFixture):
         except ZeroDivisionError as e:
             exception_string = traceback.format_exc()
             assert "line 4" in exception_string
+
+    def test_traceback_multiple_function_additions(self):
+        """Test line numbers remain accurate when multiple functions are added."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def original_func():
+                return 42/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Verify original line number
+        try:
+            mod.original_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 2" in exception_string
+
+        # Add multiple functions before the original
+        self.write_file(
+            mod_fn,
+            """
+            def new_func1():
+                x = 1
+                return x
+            
+            def new_func2():
+                y = 2
+                return y
+                
+            def new_func3():
+                z = 3
+                return z
+            
+            def original_func():
+                return 42/0
+            """,
+        )
+        self.shell.run_code("pass")
+        
+        # Original function should now be at line 14 (was line 2, moved down 12 lines)
+        try:
+            mod.original_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 14" in exception_string
+
+    def test_traceback_class_method_line_numbers(self):
+        """Test line numbers for class methods after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            class TestClass:
+                def method_with_error(self):
+                    return 1/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("obj = %s.TestClass()" % mod_name)
+        self.shell.run_code("pass")
+        
+        # Test original line number
+        try:
+            self.shell.run_code("obj.method_with_error()")
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 3" in exception_string
+
+        # Add content before the class
+        self.write_file(
+            mod_fn,
+            """
+            # New comment line
+            x = 42
+            y = 43
+            
+            class TestClass:
+                def method_with_error(self):
+                    return 1/0
+            """,
+        )
+        self.shell.run_code("pass")
+        # Method should now be at line 7 (was line 3, moved down 4 lines)
+        try:
+            self.shell.run_code("obj.method_with_error()")
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 7" in exception_string
+
+    def test_traceback_function_size_change(self):
+        """Test line numbers when a function changes size."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def func1():
+                return 1
+                
+            def func2():
+                return 2/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test original func2 line number
+        try:
+            mod.func2()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 5" in exception_string
+
+        # Make func1 larger, which should shift func2
+        self.write_file(
+            mod_fn,
+            """
+            def func1():
+                x = 1
+                y = 2
+                z = 3
+                w = 4
+                return x + y + z + w
+                
+            def func2():
+                return 2/0
+            """,
+        )
+        self.shell.run_code("pass")
+        
+        # func2 should now be at line 9 (was line 5, func1 expanded by 4 lines)
+        try:
+            mod.func2()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 9" in exception_string
+
+    def test_traceback_no_line_patching_on_syntax_errors(self):
+        """Test that syntax errors don't break line patching."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def working_func():
+                return 6/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test original function works and has correct line number
+        try:
+            mod.working_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 2" in exception_string
+
+        # Introduce syntax error
+        self.write_file(
+            mod_fn,
+            """
+            def syntax error here!
+            def working_func():
+                return 6/0
+            """,
+        )
+        self.shell.run_code("pass")
+        
+        # Function should still work with original line number (line patching should be gracefully skipped)
+        try:
+            mod.working_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            # May still show line 2 if patching was skipped due to syntax error
+            assert "line 2" in exception_string or "line 3" in exception_string
+
+
+    def test_traceback_error_in_different_functions(self):
+        """Test that line numbers are accurate for errors in different functions."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def func_a():
+                return 1/0  # line 2
+                
+            def func_b():
+                return 2/0  # line 5
+                
+            def func_c():
+                return 3/0  # line 8
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test all functions have correct original line numbers
+        for func_name, expected_line in [("func_a", 2), ("func_b", 5), ("func_c", 8)]:
+            try:
+                getattr(mod, func_name)()
+                assert False
+            except ZeroDivisionError:
+                exception_string = traceback.format_exc()
+                assert f"line {expected_line}" in exception_string
+
+        # Add content before all functions
+        self.write_file(
+            mod_fn,
+            """
+            # Header comment
+            VERSION = 1
+            DEBUG = True
+            
+            def func_a():
+                return 1/0  # now line 6
+                
+            def func_b():
+                return 2/0  # now line 9
+                
+            def func_c():
+                return 3/0  # now line 12
+            """,
+        )
+        self.shell.run_code("pass")
+        
+        # Test all functions have updated line numbers (each moved down 4 lines)
+        for func_name, expected_line in [("func_a", 6), ("func_b", 9), ("func_c", 12)]:
+            try:
+                getattr(mod, func_name)()
+                assert False
+            except ZeroDivisionError:
+                exception_string = traceback.format_exc()
+                assert f"line {expected_line}" in exception_string
+
+
+    def test_traceback_comprehension_line_numbers(self):
+        """Test line numbers for comprehensions after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def func_with_comprehension():
+                result = [1/(x-2) for x in [1, 2, 3]]
+                return result
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test original comprehension line number
+        try:
+            mod.func_with_comprehension()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 2" in exception_string
+
+        # Add content before the function
+        self.write_file(
+            mod_fn,
+            """
+            # Comment line
+            import itertools
+            
+            def func_with_comprehension():
+                result = [1/(x-2) for x in [1, 2, 3]]
+                return result
+            """,
+        )
+        self.shell.run_code("pass")
+        
+        # Comprehension should now be at line 5 (was line 2, moved down 3 lines)
+        try:
+            mod.func_with_comprehension()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 5" in exception_string
+
+    def test_traceback_property_line_numbers(self):
+        """Test line numbers for property methods after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            class MyClass:
+                @property
+                def bad_property(self):
+                    return 10/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("obj = %s.MyClass()" % mod_name)
+        self.shell.run_code("pass")
+        
+        # Test original property line number
+        try:
+            self.shell.run_code("obj.bad_property")
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 4" in exception_string
+
+        # Add content before the class
+        self.write_file(
+            mod_fn,
+            """
+            import math
+            
+            class MyClass:
+                @property
+                def bad_property(self):
+                    return 10/0
+            """,
+        )
+        self.shell.run_code("pass")
+        
+        # Property should now be at line 6 (was line 4, moved down 2 lines)
+        try:
+            self.shell.run_code("obj.bad_property")
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 6" in exception_string
+
+    def test_traceback_static_method_line_number_add_comments(self):
+        """Test line numbers for static methods after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            class Utils:
+                @staticmethod
+                def bad_static():
+                    return 7/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test original static method line number
+        try:
+            mod.Utils.bad_static()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 4" in exception_string
+
+        # Add content and expand the class
+        self.write_file(
+            mod_fn,
+            """
+            # New content
+            VERSION = "1.0"
+            
+            class Utils:
+                def __init__(self):
+                    pass
+                    
+                @staticmethod
+                def bad_static():
+                    return 7/0
+            """,
+        )
+        self.shell.run_code("pass")
+        
+        try:
+            mod.Utils.bad_static()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 10" in exception_string
+    def test_traceback_static_method_line_numbers(self):
+        """Test line numbers for static methods after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            class Utils:
+                @staticmethod
+                def bad_static():
+                    return 7/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test original static method line number
+        try:
+            mod.Utils.bad_static()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 4" in exception_string
+
+        # Add content and expand the class
+        self.write_file(
+            mod_fn,
+            """
+            VERSION = "1.0"
+            
+            class Utils:
+                def __init__(self):
+                    pass
+                    
+                @staticmethod
+                def bad_static():
+                    return 7/0
+            """,
+        )
+        self.shell.run_code("pass")
+        
+        # Static method should now be at line 9 (was line 4, moved down 5 lines)
+        try:
+            mod.Utils.bad_static()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 9" in exception_string
+
+    def test_traceback_class_method_line_numbers(self):
+        """Test line numbers for class methods after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            class Worker:
+                @classmethod
+                def bad_classmethod(cls):
+                    return 3/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test original class method line number
+        try:
+            mod.Worker.bad_classmethod()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 4" in exception_string
+
+        # Insert content before and expand the class
+        self.write_file(
+            mod_fn,
+            """
+            from typing import Any
+            
+            class Worker:
+                instance_count = 0
+                
+                @classmethod
+                def bad_classmethod(cls):
+                    return 3/0
+            """,
+        )
+        self.shell.run_code("pass")
+        
+        # Class method should now be at line 8 (was line 4, moved down 4 lines)
+        try:
+            mod.Worker.bad_classmethod()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 8" in exception_string
+
+    def test_traceback_static_method_line_numbers(self):
+        """Test line numbers for static methods after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            class Utils:
+                @staticmethod
+                def bad_static():
+                    return 7/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test original static method line number
+        try:
+            mod.Utils.bad_static()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 4" in exception_string
+
+        # Add content and expand the class
+        self.write_file(
+            mod_fn,
+            """
+            VERSION = "1.0"
+            
+            class Utils:
+                def __init__(self):
+                    pass
+                    
+                @staticmethod
+                def bad_static():
+                    return 7/0
+            """,
+        )
+        self.shell.run_code("pass")
+        
+        # Static method should now be at line 9 (was line 4, moved down 5 lines)
+        try:
+            mod.Utils.bad_static()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 9" in exception_string
+    
+    #TODO[CLAUDE_COMMENT]: Multiple test methods are duplicated - consolidate these
+    def test_traceback_static_method_line_numbers_extra_space(self):
+        """Test line numbers for static methods after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            class Utils:
+                @staticmethod
+                def bad_static():
+                    return 7/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test original static method line number
+        try:
+            mod.Utils.bad_static()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 4" in exception_string
+
+        # Add content and expand the class
+        self.write_file(
+            mod_fn,
+            """
+            VERSION = "1.0"
+            
+            class Utils:
+                def __init__(self):
+                    pass
+                    
+                @staticmethod
+
+                def bad_static():
+                    return 7/0
+            """,
+        )
+        self.shell.run_code("pass")
+        
+        # Static method should now be at line 9 (was line 4, moved down 5 lines)
+        try:
+            mod.Utils.bad_static()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 10" in exception_string
+
+    def test_traceback_class_method_line_numbers(self):
+        """Test line numbers for class methods after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            class Worker:
+                @classmethod
+                def bad_classmethod(cls):
+                    return 3/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test original class method line number
+        try:
+            mod.Worker.bad_classmethod()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 4" in exception_string
+
+        # Insert content before and expand the class
+        self.write_file(
+            mod_fn,
+            """
+            from typing import Any
+            
+            class Worker:
+                instance_count = 0
+                
+                @classmethod
+                def bad_classmethod(cls):
+                    return 3/0
+            """,
+        )
+        self.shell.run_code("pass")
+        
+        # Class method should now be at line 8 (was line 4, moved down 4 lines)
+        try:
+            mod.Worker.bad_classmethod()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 8" in exception_string
+
+
+    def test_traceback_line_numbers_add_comments(self):
+        """Test that original line numbers are preserved when patching fails."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def simple_func():
+                return 11/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+                
+        # Test original line number in traceback
+        try:
+            mod.simple_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert f"line 2" in exception_string
+
+        # Modify the file to shift lines
+        self.write_file(
+            mod_fn,
+            """
+            # New content            
+            def simple_func():
+                return 11/0
+            """,
+        )
+        self.shell.run_code("pass")
+        try:
+            mod.simple_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert ("line 3" in exception_string)
+
+    def test_traceback_line_numbers_preserved_on_patch_failure(self):
+        """Test that original line numbers are preserved when patching fails."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def simple_func():
+                return 11/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        try:
+            mod.simple_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert f"line 2" in exception_string
+
+        # Modify the file to shift lines
+        self.write_file(
+            mod_fn,
+            """
+            # New content
+            x = 1
+            y = 2
+            
+            def simple_func():
+                return 11/0
+            """,
+        )
+        self.shell.run_code("pass")
+        
+        try:
+            mod.simple_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 6" in exception_string
+
+    def test_traceback_mixed_function_types(self):
+        """Test line numbers for mixed function types in one module."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def regular_func():
+                return 1
+
+            async def async_func():
+                return 2/0
+
+            class TestClass:
+                def method(self):
+                    return 3
+                    
+                @staticmethod
+                def static_error():
+                    return 4/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test original static method line number
+        try:
+            mod.TestClass.static_error()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 13" in exception_string
+
+        # Expand the regular function, which should shift everything after it
+        self.write_file(
+            mod_fn,
+            """
+            def regular_func():
+                # Added comments and lines
+                x = 1
+                y = 2
+                z = 3
+                return x + y + z
+
+            async def async_func():
+                return 2/0
+
+            class TestClass:
+                def method(self):
+                    return 3
+                    
+                @staticmethod
+                def static_error():
+                    return 4/0
+            """,
+        )
+        self.shell.run_code("pass")
+        
+        # Static method should now be at line 16 (was line 12, moved down 4 lines)
+        try:
+            mod.TestClass.static_error()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 17" in exception_string
+
+    def test_traceback_nested_function_line_numbers(self):
+        """Test line numbers for nested functions after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def outer_func():
+                def inner_func():
+                    return 5/0
+                return inner_func()
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test original nested function line number
+        try:
+            mod.outer_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            print(exception_string)
+            print("!!!!!!!!!")
+            assert "line 3" in exception_string
+        
+        # Add lines before the function
+        self.write_file(
+            mod_fn,
+            """
+            import sys
+            import os
+            
+            def outer_func():
+                def inner_func():
+                    return 5/0
+                return inner_func()
+            """,
+        )
+        self.shell.run_code("pass")
+        
+        # Inner function should now be at line 6 (was line 3, moved down 3 lines)
+        try:
+            mod.outer_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 6" in exception_string
+
+    def test_traceback_decorator_line_numbers(self):
+        """Test line numbers for decorated functions after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def decorator(func):
+                return func
+                
+            @decorator
+            def decorated_func():
+                return 8/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test original decorated function line number
+        try:
+            mod.decorated_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 6" in exception_string
+
+        # Add content before the decorator
+        self.write_file(
+            mod_fn,
+            """
+            def decorator(func):
+                x = 1
+                return func
+                
+            @decorator
+            def decorated_func():
+                return 8/0
+            """,
+        )
+        self.shell.run_code("pass")
+        try:
+            mod.decorated_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 7" in exception_string
+        
+    def test_traceback_double_decorator_line_numbers(self):
+        """Test line numbers for decorated functions after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def decorator(func):
+                return func
+                
+            @decorator
+            def decorated_func():
+                return 8/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test original decorated function line number
+        try:
+            mod.decorated_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 6" in exception_string
+
+        # Add content before the decorator
+        self.write_file(
+            mod_fn,
+            """
+            def decorator(func):
+                x = 1
+                return func
+                
+            @decorator
+            @decorator
+            def decorated_func():
+                return 8/0
+            """,
+        )
+        self.shell.run_code("pass")
+        try:
+            mod.decorated_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 8" in exception_string
+
+
+class TestAutoreloadTracebackFailures(ShellFixture):
+    def test_traceback_lambda_line_numbers(self):
+        """Test line numbers for lambdas after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            bad_lambda = lambda: 9/0
+            
+            def call_lambda():
+                return bad_lambda()
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test original lambda line number
+        try:
+            mod.call_lambda()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 1" in exception_string
+
+        # Add content before the lambda
+        self.write_file(
+            mod_fn,
+            """
+            x = 1
+            bad_lambda = lambda: 9/0
+            def call_lambda():
+                return bad_lambda()
+            """,
+        )
+        self.shell.run_code("pass")
+        
+        try:
+            mod.call_lambda()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 2" in exception_string
+
+    def test_traceback_decorator_line_numbers_space(self):
+        """Test line numbers for decorated functions after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def decorator(func):
+                return func
+                
+            @decorator
+            def decorated_func():
+                return 8/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test original decorated function line number
+        try:
+            mod.decorated_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 6" in exception_string
+
+        # Add content before the decorator
+        self.write_file(
+            mod_fn,
+            """
+            def decorator(func):
+                x = 1
+                return func
+                
+            @decorator
+
+            def decorated_func():
+                z = 1
+                return 8/0
+            """,
+        )
+        self.shell.run_code("pass")
+        try:
+            mod.decorated_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 9" in exception_string
+    
+    def test_traceback_decorator_line_numbers_space_in_new_func(self):
+        """Test line numbers for decorated functions after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def decorator(func):
+                return func
+                
+            @decorator
+            def decorated_func():
+                return 8/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test original decorated function line number
+        try:
+            mod.decorated_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 6" in exception_string
+
+        # Add content before the decorator
+        self.write_file(
+            mod_fn,
+            """
+            def decorator(func):
+                x = 1
+                return func
+                
+            @decorator
+            def decorated_func():
+
+                z = 1
+                return 8/0
+            """,
+        )
+        self.shell.run_code("pass")
+        try:
+            mod.decorated_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 9" in exception_string
+
+    def test_traceback_decorator_line_numbers_space2(self):
+        """Test line numbers for decorated functions after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def decorator(func):
+                return func
+                
+            @decorator
+            def decorated_func():
+                return 8/0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+        
+        # Test original decorated function line number
+        try:
+            mod.decorated_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 6" in exception_string
+
+        # Add content before the decorator
+        self.write_file(
+            mod_fn,
+            """
+            def decorator(func,y):
+                x = 1
+                return func
+                
+            @decorator(lambda x: 10, y=10
+            )
+            def decorated_func():
+                z = 1
+                return 8/0
+            """,
+        )
+        self.shell.run_code("pass")
+        try:
+            mod.decorated_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 9" in exception_string
 
 
 if __name__ == "__main__":

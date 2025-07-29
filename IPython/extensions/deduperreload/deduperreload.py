@@ -421,8 +421,6 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
         for prefix in prefixes:
             namespace_to_check = namespace_to_check.__dict__[prefix]
 
-        # Track reloaded code objects for line number patching
-        reloaded_code_objects = set()
         root_module: ModuleType | type | None = None
         # Get the root module for line number patching
         if isinstance(ns, ModuleType):
@@ -442,7 +440,6 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
 
                 # Track this function for line number patching
                 qualified_name = ".".join(prefixes + [name]) if prefixes else name
-                reloaded_code_objects.add(qualified_name)
                 if isinstance(to_patch_to, (staticmethod, classmethod)):
                     to_patch_to = to_patch_to.__func__
                 # exec new source code using old function's (obj) globals environment.
@@ -503,7 +500,6 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
                     setattr(namespace_to_check, name, local_env[name])
                     # Track non-function definitions for line number patching
                     qualified_name = ".".join(prefixes + [name]) if prefixes else name
-                    reloaded_code_objects.add(qualified_name)
         cur.defs_to_reload.clear()
         for name in cur.defs_to_delete:
             try:
@@ -534,8 +530,8 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
             and isinstance(root_module, ModuleType)
         ):
             try:
-                # Instead of just using reloaded_code_objects, update ALL code objects
-                # since any change can shift line numbers
+                #TODO[CLAUDE_COMMENT]: The force_update=True call may be too aggressive - consider making this configurable
+                #TODO[CLAUDE_COMMENT]: Should log successful line number patching at debug level for troubleshooting
                 self.line_patcher.update_all_code_object_line_numbers(
                     root_module, [], force_update=True
                 )

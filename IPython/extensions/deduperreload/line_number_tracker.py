@@ -92,10 +92,24 @@ class ModuleSourceTracker:
         for node in getattr(tree, "body", []):
             if isinstance(node, ast.FunctionDef):
                 name = f"{prefix}.{node.name}" if prefix else node.name
+                
+                # For decorated functions, use the first decorator line to match co_firstlineno
+                #TODO[CLAUDE_COMMENT]: Decorator handling assumes first decorator line matches co_firstlineno - this may not work for all decorator patterns
+                # print("!!!!!!!!!!!")
+                # print(node.name)
+                # print(node.lineno)
+                # print(node.decorator_list)
+                # if node.decorator_list:
+                #     print(node.decorator_list[0].lineno)
+                # print("!!!!!!!!!!!")
+                start_line = node.lineno
+                if node.decorator_list:
+                    start_line = node.decorator_list[0].lineno
+                
                 positions[name] = CodePosition(
                     name=name,
                     type="function",
-                    start_line=node.lineno,
+                    start_line=start_line,
                     end_line=getattr(node, "end_lineno", node.lineno),
                     original_start=node.lineno,
                 )
@@ -104,10 +118,16 @@ class ModuleSourceTracker:
 
             elif isinstance(node, ast.AsyncFunctionDef):
                 name = f"{prefix}.{node.name}" if prefix else node.name
+                
+                # For decorated async functions, use the first decorator line to match co_firstlineno
+                start_line = node.lineno
+                if node.decorator_list:
+                    start_line = node.decorator_list[0].lineno
+                
                 positions[name] = CodePosition(
                     name=name,
                     type="async_function",
-                    start_line=node.lineno,
+                    start_line=start_line,
                     end_line=getattr(node, "end_lineno", node.lineno),
                     original_start=node.lineno,
                 )
@@ -223,6 +243,7 @@ class ModuleSourceTracker:
 
         # Get stored positions from previous parse (if any)
         # This would be set by a previous call to track_module_source + parse_all_code_positions
+        #TODO[CLAUDE_COMMENT]: The old_positions logic is incomplete - this method needs to store and retrieve previous positions
         old_positions: Dict[
             str, CodePosition
         ] = {}  # For now, we'll implement this in the next phase
@@ -261,6 +282,7 @@ class ModuleSourceTracker:
         """Get stored positions for a module."""
         import copy
 
+        #TODO[CLAUDE_COMMENT]: Deep copying positions on every access is inefficient - consider caching or lazy copying
         return copy.deepcopy(self.code_positions.get(module_name, {}))
 
     def clear_module(self, module_name: str) -> None:

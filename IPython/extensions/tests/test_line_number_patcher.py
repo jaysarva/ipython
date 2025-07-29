@@ -331,7 +331,7 @@ class TestLineNumberPatching:
         # Mock the patching method to avoid ctypes complexity in tests
         with patch.object(self.patcher, "try_patch_attr") as mock_patch:
             result = self.patcher.patch_single_code_object_lines(
-                test_function, new_line
+                test_function, new_line, "test_function"
             )
 
         assert result is True
@@ -353,7 +353,7 @@ class TestLineNumberPatching:
         ), warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
 
-            result = self.patcher.patch_single_code_object_lines(test_function, 100)
+            result = self.patcher.patch_single_code_object_lines(test_function, 100, "test_function")
 
         assert result is False
         assert len(w) == 1
@@ -393,7 +393,7 @@ class TestLineNumberPatching:
             self.patcher.update_all_code_object_line_numbers(mock_module, shifts)
 
         # Should have attempted to patch the function
-        mock_patch.assert_called_once_with(test_func, 50)
+        mock_patch.assert_called_once_with(test_func, 50, "test_func")
 
     def test_update_all_code_object_line_numbers_no_shifts(self):
         """Test update with no shifts (should return early)."""
@@ -635,7 +635,7 @@ class TestIntegration:
         new_line = original_line + 20
 
         # Test the complete workflow
-        result = patcher.patch_single_code_object_lines(original_function, new_line)
+        result = patcher.patch_single_code_object_lines(original_function, new_line, "original_function")
 
         # The result depends on whether ctypes patching actually works
         # In test environment, it might fail, but should handle gracefully
