@@ -8,13 +8,10 @@ for all code objects in a module, not just the ones that were reloaded.
 
 from __future__ import annotations
 
-import ast
-import inspect
-import sys
 import types
 import warnings
-from types import ModuleType, FunctionType, MethodType
-from typing import Dict, List, Set, Optional, Any, Tuple, Union
+from types import ModuleType, FunctionType
+from typing import Dict, List, Set, Optional, Any, Tuple
 
 from IPython.extensions.deduperreload.deduperreload_patching import (
     DeduperReloaderPatchingMixin,
@@ -518,11 +515,11 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
 
     def _patch_nested_functions_in_code(
         self,
-        code_obj,
-        parent_obj,
+        code_obj: types.CodeType,
+        parent_obj: Any,
         parent_name: str,
         current_positions: Dict[str, CodePosition],
-    ):
+    ) -> types.CodeType:
         """Patch line numbers for nested functions within a code object's constants.
 
         Nested functions are stored as code objects in the parent function's

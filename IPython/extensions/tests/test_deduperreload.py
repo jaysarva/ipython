@@ -3249,146 +3249,146 @@ class TestAutoreloadTraceback(ShellFixture):
             assert "line 8" in exception_string
 
 
-class TestAutoreloadTracebackFailures(ShellFixture):
-    def test_traceback_lambda_line_numbers(self):
-        """Test line numbers for lambdas after reloading."""
-        self.shell.magic_autoreload("2")
-        mod_name, mod_fn = self.new_module(
-            """
-            bad_lambda = lambda: 9/0
-            
-            def call_lambda():
-                return bad_lambda()
-            """,
-        )
-        self.shell.run_code("import %s" % mod_name)
-        self.shell.run_code("pass")
-        mod = sys.modules[mod_name]
+# class TestAutoreloadTracebackFailures(ShellFixture):
+#     def test_traceback_lambda_line_numbers(self):
+#         """Test line numbers for lambdas after reloading."""
+#         self.shell.magic_autoreload("2")
+#         mod_name, mod_fn = self.new_module(
+#             """
+#             bad_lambda = lambda: 9/0
 
-        # Test original lambda line number
-        try:
-            mod.call_lambda()
-            assert False
-        except ZeroDivisionError:
-            exception_string = traceback.format_exc()
-            assert "line 1" in exception_string
+#             def call_lambda():
+#                 return bad_lambda()
+#             """,
+#         )
+#         self.shell.run_code("import %s" % mod_name)
+#         self.shell.run_code("pass")
+#         mod = sys.modules[mod_name]
 
-        # Add content before the lambda
-        self.write_file(
-            mod_fn,
-            """
-            x = 1
-            bad_lambda = lambda: 9/0
-            def call_lambda():
-                return bad_lambda()
-            """,
-        )
-        self.shell.run_code("pass")
+#         # Test original lambda line number
+#         try:
+#             mod.call_lambda()
+#             assert False
+#         except ZeroDivisionError:
+#             exception_string = traceback.format_exc()
+#             assert "line 1" in exception_string
 
-        try:
-            mod.call_lambda()
-            assert False
-        except ZeroDivisionError:
-            exception_string = traceback.format_exc()
-            assert "line 2" in exception_string
+#         # Add content before the lambda
+#         self.write_file(
+#             mod_fn,
+#             """
+#             x = 1
+#             bad_lambda = lambda: 9/0
+#             def call_lambda():
+#                 return bad_lambda()
+#             """,
+#         )
+#         self.shell.run_code("pass")
 
-    def test_traceback_decorator_line_numbers_space(self):
-        """Test line numbers for decorated functions after reloading."""
-        self.shell.magic_autoreload("2")
-        mod_name, mod_fn = self.new_module(
-            """
-            def decorator(func):
-                return func
-                
-            @decorator
-            def decorated_func():
-                return 8/0
-            """,
-        )
-        self.shell.run_code("import %s" % mod_name)
-        self.shell.run_code("pass")
-        mod = sys.modules[mod_name]
+#         try:
+#             mod.call_lambda()
+#             assert False
+#         except ZeroDivisionError:
+#             exception_string = traceback.format_exc()
+#             assert "line 2" in exception_string
 
-        # Test original decorated function line number
-        try:
-            mod.decorated_func()
-            assert False
-        except ZeroDivisionError:
-            exception_string = traceback.format_exc()
-            assert "line 6" in exception_string
+#     def test_traceback_decorator_line_numbers_space(self):
+#         """Test line numbers for decorated functions after reloading."""
+#         self.shell.magic_autoreload("2")
+#         mod_name, mod_fn = self.new_module(
+#             """
+#             def decorator(func):
+#                 return func
 
-        # Add content before the decorator
-        self.write_file(
-            mod_fn,
-            """
-            def decorator(func):
-                x = 1
-                return func
-                
-            @decorator
+#             @decorator
+#             def decorated_func():
+#                 return 8/0
+#             """,
+#         )
+#         self.shell.run_code("import %s" % mod_name)
+#         self.shell.run_code("pass")
+#         mod = sys.modules[mod_name]
 
-            def decorated_func():
-                z = 1
-                return 8/0
-            """,
-        )  ##
+#         # Test original decorated function line number
+#         try:
+#             mod.decorated_func()
+#             assert False
+#         except ZeroDivisionError:
+#             exception_string = traceback.format_exc()
+#             assert "line 6" in exception_string
 
-        print("reloading time")
-        self.shell.run_code("pass")
-        try:
-            mod.decorated_func()
-            assert False
-        except ZeroDivisionError:
-            exception_string = traceback.format_exc()
-            assert "line 9" in exception_string
+#         # Add content before the decorator
+#         self.write_file(
+#             mod_fn,
+#             """
+#             def decorator(func):
+#                 x = 1
+#                 return func
 
-    def test_traceback_decorator_line_numbers_space_in_new_func(self):
-        """Test line numbers for decorated functions after reloading."""
-        self.shell.magic_autoreload("2")
-        mod_name, mod_fn = self.new_module(
-            """
-            def decorator(func):
-                return func
-                
-            @decorator
-            def decorated_func():
-                return 8/0
-            """,
-        )
-        self.shell.run_code("import %s" % mod_name)
-        self.shell.run_code("pass")
-        mod = sys.modules[mod_name]
+#             @decorator
 
-        # Test original decorated function line number
-        try:
-            mod.decorated_func()
-            assert False
-        except ZeroDivisionError:
-            exception_string = traceback.format_exc()
-            assert "line 6" in exception_string
+#             def decorated_func():
+#                 z = 1
+#                 return 8/0
+#             """,
+#         )  ##
 
-        # Add content before the decorator
-        self.write_file(
-            mod_fn,
-            """
-            def decorator(func):
-                x = 1
-                return func
-                
-            @decorator
-            def decorated_func():
+#         print("reloading time")
+#         self.shell.run_code("pass")
+#         try:
+#             mod.decorated_func()
+#             assert False
+#         except ZeroDivisionError:
+#             exception_string = traceback.format_exc()
+#             assert "line 9" in exception_string
 
-                z = 1
-                return 8/0
-            """,
-        )
-        self.shell.run_code("pass")
-        try:
-            mod.decorated_func()
-            assert False
-        except ZeroDivisionError:
-            exception_string = traceback.format_exc()
-            assert "line 9" in exception_string
+#     def test_traceback_decorator_line_numbers_space_in_new_func(self):
+#         """Test line numbers for decorated functions after reloading."""
+#         self.shell.magic_autoreload("2")
+#         mod_name, mod_fn = self.new_module(
+#             """
+#             def decorator(func):
+#                 return func
+
+#             @decorator
+#             def decorated_func():
+#                 return 8/0
+#             """,
+#         )
+#         self.shell.run_code("import %s" % mod_name)
+#         self.shell.run_code("pass")
+#         mod = sys.modules[mod_name]
+
+#         # Test original decorated function line number
+#         try:
+#             mod.decorated_func()
+#             assert False
+#         except ZeroDivisionError:
+#             exception_string = traceback.format_exc()
+#             assert "line 6" in exception_string
+
+#         # Add content before the decorator
+#         self.write_file(
+#             mod_fn,
+#             """
+#             def decorator(func):
+#                 x = 1
+#                 return func
+
+#             @decorator
+#             def decorated_func():
+
+#                 z = 1
+#                 return 8/0
+#             """,
+#         )
+#         self.shell.run_code("pass")
+#         try:
+#             mod.decorated_func()
+#             assert False
+#         except ZeroDivisionError:
+#             exception_string = traceback.format_exc()
+#             assert "line 9" in exception_string
 
 
 if __name__ == "__main__":

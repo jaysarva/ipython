@@ -1,3 +1,4 @@
+import types
 from typing import Any, List, Tuple
 
 
@@ -364,7 +365,9 @@ def encode_linetable(pairs: List[Tuple[int, int]]) -> bytes:
     return bytes(result)
 
 
-def shifted_line_table(code, delta_map):
+def shifted_line_table(
+    code: types.CodeType, delta_map: dict[int, int]
+) -> types.CodeType:
     """Create a new CodeType with shifted line numbers based on delta_map.
 
     This function implements the core line table patching algorithm described

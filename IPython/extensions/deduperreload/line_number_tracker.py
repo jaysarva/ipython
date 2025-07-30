@@ -416,5 +416,5 @@ class ModuleSourceTracker:
         Args:
             module_name: Name of the module to clear
         """
-        self.module_snapshots.pop(module_name, None)
-        self.code_positions.pop(module_name, None)
+        _ = self.module_snapshots.pop(module_name, None)
+        _ = self.code_positions.pop(module_name, None)
