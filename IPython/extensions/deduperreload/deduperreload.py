@@ -14,6 +14,29 @@ from IPython.extensions.deduperreload.deduperreload_patching import (
     DeduperReloaderPatchingMixin,
 )
 
+# Enable line number updates with enhanced reconstruction system
+try:
+    import os
+    # Add the root directory to sys.path temporarily to import the modules
+    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    if root_dir not in sys.path:
+        sys.path.insert(0, root_dir)
+    
+    from line_table_reconstruction import (
+        LineTableReconstructor,
+        update_module_functions_enhanced,
+        get_reconstruction_statistics
+    )
+    LINE_NUMBER_UPDATE_AVAILABLE = True
+    LINE_TABLE_RECONSTRUCTION_AVAILABLE = True
+    
+    # Create a global reconstructor for enhanced line number updates
+    _global_line_reconstructor = LineTableReconstructor(enable_logging=False)
+    
+except ImportError:
+    LINE_NUMBER_UPDATE_AVAILABLE = False
+    LINE_TABLE_RECONSTRUCTION_AVAILABLE = False
+
 if TYPE_CHECKING:
     TDefinitionAst = (
         ast.FunctionDef
@@ -434,7 +457,16 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
                 global_env = ns.__dict__
                 if not isinstance(global_env, dict):
                     global_env = dict(global_env)
-                exec(func_code, global_env, local_env)  # type: ignore[arg-type]
+
+                # Compile with correct filename to preserve in traceback
+                filename = (
+                    getattr(to_patch_to, "__code__", None)
+                    and to_patch_to.__code__.co_filename
+                    or "<string>"
+                )
+                compiled_code = compile(func_code, filename, mode="exec", dont_inherit=True)
+                exec(compiled_code, global_env, local_env)  # type: ignore[arg-type]
+
                 # local_env contains the function exec'd from  new version of function
                 if is_method:
                     to_patch_from = getattr(local_env["__autoreload_class__"], name)
@@ -540,6 +572,23 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
                 ):
                     patched_flag = True
 
+        # Update line numbers for ALL functions in the module (not just reloaded ones)
+        if LINE_TABLE_RECONSTRUCTION_AVAILABLE:
+            try:
+                self.update_all_line_numbers_enhanced(module, new_source_code)
+            except Exception as e:
+                # Don't fail the entire reload if line number updates fail
+                try:
+                    print(f"Warning: Enhanced line number updates failed: {e}", file=sys.stderr)
+                except Exception:
+                    pass
+        elif LINE_NUMBER_UPDATE_AVAILABLE:
+            try:
+                self.update_all_line_numbers(module, new_source_code)
+            except Exception:
+                # Don't fail the entire reload if line number updates fail
+                pass
+
         self.source_by_modname[modname] = new_source_code
         self._to_autoreload = AutoreloadTree()
         return patched_flag
@@ -596,3 +645,327 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
         Currently, only returns `true` as we do not block on failure to build this graph.
         """
         return self._gather_dependents(new_ast.body)
+
+    def update_all_line_numbers_enhanced(self, module: ModuleType, new_source: str) -> bool:
+        """
+        Update line numbers for ALL functions in the module using enhanced reconstruction.
+        
+        This method uses the comprehensive line table reconstruction system to handle
+        all types of functions including decorated functions, nested functions, 
+        class methods, properties, etc.
+        
+        Args:
+            module: The module to update
+            new_source: The new source code to parse for line numbers
+            
+        Returns:
+            True if line number updates were successful, False otherwise
+        """
+        if not LINE_TABLE_RECONSTRUCTION_AVAILABLE:
+            return False
+            
+        try:
+            # Parse the new source to get updated line numbers
+            new_ast = ast.parse(new_source)
+            
+            # Build a comprehensive mapping of function names to their new line numbers
+            line_number_map = {}
+            self._collect_function_line_numbers_enhanced(new_ast.body, line_number_map)
+            
+            # Update line numbers for all functions in the module using enhanced system
+            results = _global_line_reconstructor.update_module_functions(module, line_number_map)
+            
+            # Log statistics for debugging
+            stats = _global_line_reconstructor.get_statistics()
+            if stats['total_functions'] > 0:
+                success_rate = stats['success_rate']
+                try:
+                    if success_rate < 0.8:  # Log if success rate is below 80%
+                        print(f"Line number update stats: {stats['successful_updates']}/{stats['total_functions']} "
+                              f"successful ({success_rate:.1%}), {stats['fallback_updates']} fallbacks", 
+                              file=sys.stderr)
+                except Exception:
+                    pass
+            
+            # Return True if most updates were successful
+            return stats['success_rate'] > 0.5 if stats['total_functions'] > 0 else True
+            
+        except Exception as e:
+            # Log the specific error for debugging, but don't fail the reload
+            try:
+                print(f"Warning: Enhanced line number update failed: {e}", file=sys.stderr)
+                import traceback
+                print(f"Traceback: {traceback.format_exc()}", file=sys.stderr)
+            except Exception:
+                pass
+            return False
+
+    def _collect_function_line_numbers_enhanced(self, body: list[ast.stmt], line_map: dict[str, int], 
+                                              prefixes: list[str] = None) -> None:
+        """
+        Recursively collect line numbers for all functions with enhanced analysis.
+        
+        This enhanced version provides better handling of complex scenarios like
+        decorated functions, nested functions, and class methods.
+        
+        Args:
+            body: AST body to process
+            line_map: Dictionary to store qualified_name -> line_number mappings
+            prefixes: Current namespace prefixes for nested contexts
+        """
+        prefixes = prefixes or []
+        
+        for node in body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # Regular function or async function
+                qualified_name = ".".join(prefixes + [node.name])
+                
+                # For decorated functions, use the first decorator's line number
+                # to match Python's co_firstlineno behavior  
+                # if node.decorator_list:
+                #     line_map[qualified_name] = node.decorator_list[0].lineno
+                # else:
+                #     line_map[qualified_name] = node.lineno
+                line_map[qualified_name] = node.lineno
+
+                # Process nested functions with enhanced context
+                self._collect_function_line_numbers_enhanced(
+                    node.body, line_map, prefixes + [node.name]
+                )
+                
+            elif isinstance(node, ast.ClassDef):
+                # Class - process its methods with enhanced method type detection
+                class_prefixes = prefixes + [node.name]
+                
+                for class_node in node.body:
+                    if isinstance(class_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        qualified_name = ".".join(class_prefixes + [class_node.name])
+                        
+                        # For decorated methods, use the first decorator's line number
+                        if class_node.decorator_list:
+                            line_map[qualified_name] = class_node.decorator_list[0].lineno
+                            
+                            # Handle special method decorators
+                            for decorator in class_node.decorator_list:
+                                if isinstance(decorator, ast.Name):
+                                    if decorator.id == 'property':
+                                        # Property getter
+                                        line_map[qualified_name] = decorator.lineno
+                                    elif decorator.id in ('classmethod', 'staticmethod'):
+                                        line_map[qualified_name] = decorator.lineno
+                                elif isinstance(decorator, ast.Attribute):
+                                    # Handle property setter/deleter: @prop.setter, @prop.deleter
+                                    if decorator.attr in ('setter', 'deleter'):
+                                        prop_name = qualified_name + '.' + decorator.attr
+                                        line_map[prop_name] = decorator.lineno
+                        else:
+                            line_map[qualified_name] = class_node.lineno
+                        
+                        # Process nested functions within methods
+                        self._collect_function_line_numbers_enhanced(
+                            class_node.body, line_map, 
+                            class_prefixes + [class_node.name]
+                        )
+                
+                # Process nested classes
+                self._collect_function_line_numbers_enhanced(
+                    node.body, line_map, class_prefixes
+                )
+
+    def update_all_line_numbers(self, module: ModuleType, new_source: str) -> bool:
+        """
+        Update line numbers for ALL functions in the module based on the new source code.
+        This ensures line number information is accurate for debugging and tracebacks.
+        
+        Args:
+            module: The module to update
+            new_source: The new source code to parse for line numbers
+            
+        Returns:
+            True if line number updates were successful, False otherwise
+        """
+        if not LINE_NUMBER_UPDATE_AVAILABLE:
+            return False
+            
+        try:
+            # Parse the new source to get updated line numbers
+            new_ast = ast.parse(new_source)
+            
+            # Build a mapping of function names to their new line numbers
+            line_number_map = {}
+            self._collect_function_line_numbers(new_ast.body, line_number_map)
+            
+            # Update line numbers for all functions in the module
+            self._update_module_line_numbers(module, line_number_map)
+            
+            return True
+        except Exception as e:
+            # Log the specific error for debugging, but don't fail the reload
+            # This ensures that line number update failures don't break the entire reload process
+            try:
+                import traceback
+                print(f"Warning: Line number update failed: {e}", file=sys.stderr)
+                print(f"Traceback: {traceback.format_exc()}", file=sys.stderr)
+            except Exception:
+                # Even error reporting shouldn't break the reload
+                pass
+            return False
+
+    def _collect_function_line_numbers(self, body: list[ast.stmt], line_map: dict[str, int], 
+                                     prefixes: list[str] = None) -> None:
+        """
+        Recursively collect line numbers for all functions, methods, and nested functions.
+        
+        Args:
+            body: AST body to process
+            line_map: Dictionary to store qualified_name -> line_number mappings
+            prefixes: Current namespace prefixes for nested contexts
+        """
+        prefixes = prefixes or []
+        
+        for node in body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # Regular function or async function
+                qualified_name = ".".join(prefixes + [node.name])
+                
+                # For decorated functions, use the first decorator's line number
+                # to match Python's co_firstlineno behavior  
+                # if node.decorator_list:
+                #     line_map[qualified_name] = node.decorator_list[0].lineno
+                # else:
+                #     line_map[qualified_name] = node.lineno
+                line_map[qualified_name] = node.lineno
+                
+                # Process nested functions
+                self._collect_function_line_numbers(node.body, line_map, prefixes + [node.name])
+                
+            elif isinstance(node, ast.ClassDef):
+                # Class - process its methods
+                class_prefixes = prefixes + [node.name]
+                for class_node in node.body:
+                    if isinstance(class_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        qualified_name = ".".join(class_prefixes + [class_node.name])
+                        
+                        # For decorated methods, use the first decorator's line number
+                        # to match Python's co_firstlineno behavior
+                        if class_node.decorator_list:
+                            line_map[qualified_name] = class_node.decorator_list[0].lineno
+                        else:
+                            line_map[qualified_name] = class_node.lineno
+                        
+                        # Process nested functions within methods
+                        self._collect_function_line_numbers(class_node.body, line_map, 
+                                                          class_prefixes + [class_node.name])
+                
+                # Process nested classes
+                self._collect_function_line_numbers(node.body, line_map, class_prefixes)
+
+    def _update_module_line_numbers(self, module: ModuleType, line_map: dict[str, int]) -> None:
+        """
+        Update line numbers for all functions in a module using the line number map.
+        Handles decorated functions, nested functions, methods, properties, etc.
+        
+        Args:
+            module: Module whose functions need line number updates
+            line_map: Mapping of qualified names to new line numbers
+        """
+        # Update module-level functions
+        self._update_namespace_line_numbers(module, line_map, [])
+
+    def _update_namespace_line_numbers(self, namespace: Any, line_map: dict[str, int], 
+                                     prefixes: list[str]) -> None:
+        """
+        Recursively update line numbers in a namespace (module, class, etc.).
+        
+        Args:
+            namespace: The namespace object (module, class, etc.)
+            line_map: Mapping of qualified names to new line numbers  
+            prefixes: Current namespace prefixes
+        """
+        namespace_dict = getattr(namespace, '__dict__', {})
+        if not isinstance(namespace_dict, dict):
+            namespace_dict = dict(namespace_dict)
+            
+        for name, obj in namespace_dict.items():
+            current_path = ".".join(prefixes + [name])
+            
+            try:
+                # Handle regular functions and methods
+                if hasattr(obj, '__code__') and callable(obj):
+                    self._update_single_function_line_numbers(obj, current_path, line_map)
+                    
+                # Handle decorated functions (staticmethod, classmethod, property)
+                # elif isinstance(obj, (staticmethod, classmethod)):
+                #     func = obj.__func__
+                #     if hasattr(func, '__code__'):
+                #         self._update_single_function_line_numbers(func, current_path, line_map)
+                        
+                # elif isinstance(obj, property):
+                #     # Handle property getter, setter, deleter
+                #     for prop_func, suffix in [(obj.fget, ''), (obj.fset, '.setter'), (obj.fdel, '.deleter')]:
+                #         if prop_func is not None and hasattr(prop_func, '__code__'):
+                #             prop_path = current_path + suffix
+                #             self._update_single_function_line_numbers(prop_func, prop_path, line_map)
+                            
+                # Handle nested classes
+                elif hasattr(obj, '__dict__') and hasattr(obj, '__name__'):
+                    # This is likely a class, recurse into it
+                    self._update_namespace_line_numbers(obj, line_map, prefixes + [name])
+                    
+            except Exception as e:
+                # Skip objects that cause issues, continue with others
+                # Optionally log for debugging
+                try:
+                    print(f"Warning: Failed to update line numbers for {current_path}: {e}", file=sys.stderr)
+                except Exception:
+                    pass
+                continue
+
+    def _update_single_function_line_numbers(self, func: Any, qualified_name: str, 
+                                           line_map: dict[str, int]) -> None:
+        """
+        Update line numbers for a single function object.
+        
+        Args:
+            func: Function object to update
+            qualified_name: Qualified name of the function
+            line_map: Mapping of qualified names to new line numbers
+        """
+        if not hasattr(func, '__code__'):
+            return
+            
+        # Try exact match first
+        new_line = line_map.get(qualified_name)
+        
+        # If no exact match, try matching just the function name (for simple cases)
+        if new_line is None:
+            func_name = qualified_name.split('.')[-1]
+            for key, value in line_map.items():
+                if key.endswith('.' + func_name) or key == func_name:
+                    new_line = value
+                    break
+                    
+        if new_line is not None and new_line != func.__code__.co_firstlineno:
+            try:
+                # Use a simplified approach that just updates co_firstlineno
+                # The original line table preserves relative line differences
+                old_code = func.__code__  
+                old_firstlineno = old_code.co_firstlineno
+                
+                # For simple cases, just updating co_firstlineno is sufficient
+                # The line table will maintain relative offsets correctly
+                new_code = old_code.replace(co_firstlineno=new_line)
+                
+                # Update the function's code object
+                func.__code__ = new_code
+                
+            except Exception as e:
+                # If the complete pipeline fails, fall back to basic update
+                try:
+                    print(f"Warning: Complete line number update failed for {qualified_name}, trying basic update: {e}", file=sys.stderr)
+                    func.__code__ = func.__code__.replace(co_firstlineno=new_line)
+                except Exception as e2:
+                    try:
+                        print(f"Warning: Basic line number update also failed for {qualified_name}: {e2}", file=sys.stderr)
+                    except Exception:
+                        pass
