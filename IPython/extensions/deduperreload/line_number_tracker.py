@@ -49,136 +49,204 @@ class LineShift:
 
 
 class ModuleSourceTracker:
-    """Tracks source code for modules and parses code positions."""
+    """Tracks source code for modules and parses code positions.
+
+    This class is responsible for:
+    - Caching module source code
+    - Parsing source code to extract positions of all code constructs
+    - Tracking position changes over time
+    - Providing position information for line number patching
+
+    The position tracking includes:
+    - Functions and async functions (with decorator handling)
+    - Classes and nested classes
+    - Methods within classes
+    - Lambda functions and comprehensions
+    - Nested functions within other functions
+    """
 
     def __init__(self) -> None:
+        # Cache of module source code
         self.module_snapshots: Dict[str, str] = {}  # module_name -> source
+
+        # Cache of parsed code positions
         self.code_positions: Dict[
             str, Dict[str, CodePosition]
         ] = {}  # module_name -> {name -> position}
 
     def track_module_source(self, module: Any) -> str:
-        """Get and cache current module source."""
+        """Get and cache current module source code.
+
+        Args:
+            module: Module object to get source for
+
+        Returns:
+            Source code string, empty if not available
+        """
         module_name = module.__name__
+
         try:
+            # Get fresh source code
             source = inspect.getsource(module)
             self.module_snapshots[module_name] = source
             return source
         except (OSError, IOError):
-            # Handle cases where source isn't available
+            # Fall back to cached source if available
             cached_source = self.module_snapshots.get(module_name, "")
             if not cached_source:
                 warnings.warn(f"Could not retrieve source for module {module_name}")
             return cached_source
 
     def parse_all_code_positions(self, source: str) -> Dict[str, CodePosition]:
-        """Parse positions of ALL code constructs with __code__ attributes."""
+        """Parse positions of ALL code constructs with __code__ attributes.
+
+        This method analyzes the source code AST to find the positions of all
+        code constructs that have __code__ attributes, including functions,
+        methods, classes, lambdas, and comprehensions.
+
+        Args:
+            source: Python source code to parse
+
+        Returns:
+            Dictionary mapping qualified names to their positions
+        """
         positions: Dict[str, CodePosition] = {}
+
         if not source.strip():
             return positions
 
         try:
             tree = ast.parse(source)
-            self._extract_positions_from_ast(tree, positions)
+            self._extract_all_positions(tree, positions)
         except SyntaxError as e:
             warnings.warn(f"Syntax error while parsing source: {e}")
+
         return positions
 
-    def _extract_positions_from_ast(
+    def _extract_all_positions(
         self, tree: ast.AST, positions: Dict[str, CodePosition], prefix: str = ""
     ) -> None:
-        """Recursively extract code positions from AST."""
-        # Use direct iteration over body instead of ast.walk to avoid nested duplication
+        """Extract all code positions from AST tree.
+
+        This method handles the complexity of extracting positions from various
+        Python constructs while avoiding duplicates from nested structures.
+
+        Args:
+            tree: AST tree or subtree to process
+            positions: Dictionary to populate with positions
+            prefix: Namespace prefix for nested constructs
+        """
+        # Extract from direct body elements (functions, classes)
+        self._extract_from_body(tree, positions, prefix)
+
+        # Extract special constructs (lambdas, comprehensions) using ast.walk
+        self._extract_special_constructs(tree, positions, prefix)
+
+    def _extract_from_body(
+        self, tree: ast.AST, positions: Dict[str, CodePosition], prefix: str
+    ) -> None:
+        """Extract positions from AST body elements."""
         for node in getattr(tree, "body", []):
             if isinstance(node, ast.FunctionDef):
-                name = f"{prefix}.{node.name}" if prefix else node.name
-                
-                # For decorated functions, use the first decorator line to match co_firstlineno
-                #TODO[CLAUDE_COMMENT]: Decorator handling assumes first decorator line matches co_firstlineno - this may not work for all decorator patterns
-                # print("!!!!!!!!!!!")
-                # print(node.name)
-                # print(node.lineno)
-                # print(node.decorator_list)
-                # if node.decorator_list:
-                #     print(node.decorator_list[0].lineno)
-                # print("!!!!!!!!!!!")
-                start_line = node.lineno
-                if node.decorator_list:
-                    start_line = node.decorator_list[0].lineno
-                
-                positions[name] = CodePosition(
-                    name=name,
-                    type="function",
-                    start_line=start_line,
-                    end_line=getattr(node, "end_lineno", node.lineno),
-                    original_start=node.lineno,
-                )
-                # Handle nested functions
-                self._extract_nested_functions(node, positions, name)
-
+                self._extract_function_position(node, positions, prefix, "function")
             elif isinstance(node, ast.AsyncFunctionDef):
-                name = f"{prefix}.{node.name}" if prefix else node.name
-                
-                # For decorated async functions, use the first decorator line to match co_firstlineno
-                start_line = node.lineno
-                if node.decorator_list:
-                    start_line = node.decorator_list[0].lineno
-                
-                positions[name] = CodePosition(
-                    name=name,
-                    type="async_function",
-                    start_line=start_line,
-                    end_line=getattr(node, "end_lineno", node.lineno),
-                    original_start=node.lineno,
+                self._extract_function_position(
+                    node, positions, prefix, "async_function"
                 )
-                # Handle nested functions
-                self._extract_nested_functions(node, positions, name)
-
             elif isinstance(node, ast.ClassDef):
-                name = f"{prefix}.{node.name}" if prefix else node.name
-                positions[name] = CodePosition(
-                    name=name,
-                    type="class",
-                    start_line=node.lineno,
-                    end_line=getattr(node, "end_lineno", node.lineno),
-                    original_start=node.lineno,
-                )
-                # Track methods within class
-                self._extract_class_methods(node, positions, name)
+                self._extract_class_position(node, positions, prefix)
 
-        # Handle lambda functions and comprehensions with ast.walk
+    def _extract_function_position(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        positions: Dict[str, CodePosition],
+        prefix: str,
+        func_type: str,
+    ) -> None:
+        """Extract position information for a function node."""
+        qualified_name = f"{prefix}.{node.name}" if prefix else node.name
+
+        # For decorated functions, start line should be the first decorator
+        # This matches how Python sets co_firstlineno
+        start_line = node.lineno
+        if node.decorator_list:
+            start_line = node.decorator_list[0].lineno
+
+        positions[qualified_name] = CodePosition(
+            name=qualified_name,
+            type=func_type,
+            start_line=start_line,
+            end_line=getattr(node, "end_lineno", node.lineno),
+            original_start=node.lineno,
+        )
+
+        # Handle nested functions within this function
+        self._extract_nested_functions(node, positions, qualified_name)
+
+    def _extract_class_position(
+        self, node: ast.ClassDef, positions: Dict[str, CodePosition], prefix: str
+    ) -> None:
+        """Extract position information for a class node."""
+        qualified_name = f"{prefix}.{node.name}" if prefix else node.name
+
+        positions[qualified_name] = CodePosition(
+            name=qualified_name,
+            type="class",
+            start_line=node.lineno,
+            end_line=getattr(node, "end_lineno", node.lineno),
+            original_start=node.lineno,
+        )
+
+        # Extract methods and nested classes within this class
+        self._extract_class_methods(node, positions, qualified_name)
+
+    def _extract_special_constructs(
+        self, tree: ast.AST, positions: Dict[str, CodePosition], prefix: str
+    ) -> None:
+        """Extract positions for special constructs like lambdas and comprehensions."""
         for node in ast.walk(tree):
-            if isinstance(node, (ast.Lambda)):
-                # Lambda functions - use position as identifier since they don't have names
-                lambda_id = f"lambda_{node.lineno}_{node.col_offset}"
-                name = f"{prefix}.{lambda_id}" if prefix else lambda_id
-                positions[name] = CodePosition(
-                    name=name,
-                    type="lambda",
-                    start_line=node.lineno,
-                    end_line=getattr(node, "end_lineno", node.lineno),
-                    original_start=node.lineno,
-                )
-
+            if isinstance(node, ast.Lambda):
+                self._extract_lambda_position(node, positions, prefix)
             elif isinstance(
                 node, (ast.ListComp, ast.DictComp, ast.SetComp, ast.GeneratorExp)
             ):
-                # Comprehensions
-                comp_type = (
-                    type(node)
-                    .__name__.lower()
-                    .replace("comp", "_comp")
-                    .replace("exp", "_exp")
-                )
-                comp_id = f"{comp_type}_{node.lineno}_{node.col_offset}"
-                name = f"{prefix}.{comp_id}" if prefix else comp_id
-                positions[name] = CodePosition(
-                    name=name,
-                    type="comprehension",
-                    start_line=node.lineno,
-                    end_line=getattr(node, "end_lineno", node.lineno),
-                    original_start=node.lineno,
-                )
+                self._extract_comprehension_position(node, positions, prefix)
+
+    def _extract_lambda_position(
+        self, node: ast.Lambda, positions: Dict[str, CodePosition], prefix: str
+    ) -> None:
+        """Extract position for a lambda function."""
+        # Use position as identifier since lambdas don't have names
+        lambda_id = f"lambda_{node.lineno}_{node.col_offset}"
+        qualified_name = f"{prefix}.{lambda_id}" if prefix else lambda_id
+
+        positions[qualified_name] = CodePosition(
+            name=qualified_name,
+            type="lambda",
+            start_line=node.lineno,
+            end_line=getattr(node, "end_lineno", node.lineno),
+            original_start=node.lineno,
+        )
+
+    def _extract_comprehension_position(
+        self, node: ast.expr, positions: Dict[str, CodePosition], prefix: str
+    ) -> None:
+        """Extract position for a comprehension expression."""
+        # Generate readable type name
+        node_type = type(node).__name__.lower()
+        comp_type = node_type.replace("comp", "_comp").replace("exp", "_exp")
+
+        # Use position as identifier
+        comp_id = f"{comp_type}_{node.lineno}_{node.col_offset}"
+        qualified_name = f"{prefix}.{comp_id}" if prefix else comp_id
+
+        positions[qualified_name] = CodePosition(
+            name=qualified_name,
+            type="comprehension",
+            start_line=node.lineno,
+            end_line=getattr(node, "end_lineno", node.lineno),
+            original_start=node.lineno,
+        )
 
     def _extract_nested_functions(
         self,
@@ -186,9 +254,15 @@ class ModuleSourceTracker:
         positions: Dict[str, CodePosition],
         parent_name: str,
     ) -> None:
-        """Extract nested functions from a function node."""
-        # Recursively extract from function body
-        self._extract_positions_from_ast(func_node, positions, parent_name)
+        """Extract nested functions from within a function node.
+
+        Args:
+            func_node: Function AST node to search within
+            positions: Dictionary to populate with positions
+            parent_name: Qualified name of the parent function
+        """
+        # Recursively extract from function body using parent name as prefix
+        self._extract_all_positions(func_node, positions, parent_name)
 
     def _extract_class_methods(
         self,
@@ -196,96 +270,151 @@ class ModuleSourceTracker:
         positions: Dict[str, CodePosition],
         class_name: str,
     ) -> None:
-        """Extract methods from a class node."""
+        """Extract methods and nested classes from a class node.
+
+        Args:
+            class_node: Class AST node to search within
+            positions: Dictionary to populate with positions
+            class_name: Qualified name of the class
+        """
         for node in class_node.body:
             if isinstance(node, ast.FunctionDef):
-                method_name = f"{class_name}.{node.name}"
-                positions[method_name] = CodePosition(
-                    name=method_name,
-                    type="method",
-                    start_line=node.lineno,
-                    end_line=getattr(node, "end_lineno", node.lineno),
-                    original_start=node.lineno,
-                )
-                # Handle nested functions within methods
-                self._extract_nested_functions(node, positions, method_name)
-
+                self._extract_method_position(node, positions, class_name, "method")
             elif isinstance(node, ast.AsyncFunctionDef):
-                method_name = f"{class_name}.{node.name}"
-                positions[method_name] = CodePosition(
-                    name=method_name,
-                    type="method",
-                    start_line=node.lineno,
-                    end_line=getattr(node, "end_lineno", node.lineno),
-                    original_start=node.lineno,
-                )
-                # Handle nested functions within async methods
-                self._extract_nested_functions(node, positions, method_name)
-
+                self._extract_method_position(node, positions, class_name, "method")
             elif isinstance(node, ast.ClassDef):
-                # Nested classes
-                nested_class_name = f"{class_name}.{node.name}"
-                positions[nested_class_name] = CodePosition(
-                    name=nested_class_name,
-                    type="class",
-                    start_line=node.lineno,
-                    end_line=getattr(node, "end_lineno", node.lineno),
-                    original_start=node.lineno,
-                )
-                # Recursively extract from nested class
-                self._extract_class_methods(node, positions, nested_class_name)
+                self._extract_nested_class_position(node, positions, class_name)
+
+    def _extract_method_position(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        positions: Dict[str, CodePosition],
+        class_name: str,
+        method_type: str,
+    ) -> None:
+        """Extract position for a method within a class."""
+        method_name = f"{class_name}.{node.name}"
+
+        positions[method_name] = CodePosition(
+            name=method_name,
+            type=method_type,
+            start_line=node.lineno,
+            end_line=getattr(node, "end_lineno", node.lineno),
+            original_start=node.lineno,
+        )
+
+        # Handle nested functions within methods
+        self._extract_nested_functions(node, positions, method_name)
+
+    def _extract_nested_class_position(
+        self, node: ast.ClassDef, positions: Dict[str, CodePosition], parent_class: str
+    ) -> None:
+        """Extract position for a nested class."""
+        nested_class_name = f"{parent_class}.{node.name}"
+
+        positions[nested_class_name] = CodePosition(
+            name=nested_class_name,
+            type="class",
+            start_line=node.lineno,
+            end_line=getattr(node, "end_lineno", node.lineno),
+            original_start=node.lineno,
+        )
+
+        # Recursively extract from nested class
+        self._extract_class_methods(node, positions, nested_class_name)
 
     def calculate_line_shifts(
         self, module_name: str, reloaded_functions: Set[str]
     ) -> List[LineShift]:
-        """Calculate how line numbers have shifted due to reloaded code objects."""
+        """Calculate how line numbers have shifted due to reloaded code objects.
+
+        This method compares the current positions with previously stored positions
+        to determine how many lines were added or removed by each reloaded function.
+
+        Args:
+            module_name: Name of the module being analyzed
+            reloaded_functions: Set of function names that were reloaded
+
+        Returns:
+            List of LineShift objects describing the changes, sorted by position
+        """
         current_positions = self.code_positions.get(module_name, {})
 
-        # Get stored positions from previous parse (if any)
-        # This would be set by a previous call to track_module_source + parse_all_code_positions
-        #TODO[CLAUDE_COMMENT]: The old_positions logic is incomplete - this method needs to store and retrieve previous positions
-        old_positions: Dict[
-            str, CodePosition
-        ] = {}  # For now, we'll implement this in the next phase
+        # Note: This method is currently unused in the main line number patching
+        # logic, which uses force_update=True to update all positions. This is
+        # kept for potential future use with more sophisticated shift calculation.
+        old_positions: Dict[str, CodePosition] = {}  # Would need to be implemented
 
         shifts = []
         for func_name in reloaded_functions:
             if func_name in old_positions and func_name in current_positions:
-                old_pos = old_positions[func_name]
-                new_pos = current_positions[func_name]
+                shift = self._calculate_single_shift(
+                    old_positions[func_name], current_positions[func_name], func_name
+                )
+                if shift:
+                    shifts.append(shift)
 
-                # Calculate size change
-                old_size = old_pos.size
-                new_size = new_pos.size
-                delta = new_size - old_size
-
-                if delta != 0:
-                    shifts.append(
-                        LineShift(
-                            position=old_pos.end_line, delta=delta, cause=func_name
-                        )
-                    )
-
-        # Sort shifts by position to apply them in order
+        # Sort shifts by position for proper application order
         shifts.sort(key=lambda s: s.position)
         return shifts
+
+    def _calculate_single_shift(
+        self, old_pos: CodePosition, new_pos: CodePosition, func_name: str
+    ) -> LineShift | None:
+        """Calculate the line shift for a single function.
+
+        Args:
+            old_pos: Previous position of the function
+            new_pos: Current position of the function
+            func_name: Name of the function (for debugging)
+
+        Returns:
+            LineShift object if there was a size change, None otherwise
+        """
+        old_size = old_pos.size
+        new_size = new_pos.size
+        delta = new_size - old_size
+
+        if delta != 0:
+            return LineShift(position=old_pos.end_line, delta=delta, cause=func_name)
+        return None
 
     def update_positions(
         self, module_name: str, positions: Dict[str, CodePosition]
     ) -> None:
-        """Update stored positions for a module."""
+        """Update stored positions for a module.
+
+        Args:
+            module_name: Name of the module
+            positions: New position information to store
+        """
         import copy
 
+        # Deep copy to ensure we don't retain references to caller's data
         self.code_positions[module_name] = copy.deepcopy(positions)
 
     def get_positions(self, module_name: str) -> Dict[str, CodePosition]:
-        """Get stored positions for a module."""
+        """Get stored positions for a module.
+
+        Args:
+            module_name: Name of the module
+
+        Returns:
+            Dictionary of position information (deep copied for safety)
+        """
         import copy
 
-        #TODO[CLAUDE_COMMENT]: Deep copying positions on every access is inefficient - consider caching or lazy copying
+        # Deep copy to prevent accidental modification of cached positions
+        # Note: This could be optimized with lazy copying if performance becomes an issue
         return copy.deepcopy(self.code_positions.get(module_name, {}))
 
     def clear_module(self, module_name: str) -> None:
-        """Clear cached data for a module."""
+        """Clear all cached data for a module.
+
+        This removes both the source code snapshot and position information.
+
+        Args:
+            module_name: Name of the module to clear
+        """
         self.module_snapshots.pop(module_name, None)
         self.code_positions.pop(module_name, None)

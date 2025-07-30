@@ -88,18 +88,18 @@ class TestEncodeDecodeSimple:
 
     def test_empty_inputs(self):
         """Test encoding with empty inputs."""
-        assert encode_lnotab([]) == b''
-        assert encode_linetable([]) == b''
-        
-        assert parse_lnotab(b'', 100) == [(0, 100)]
-        assert parse_linetable(b'', 100) == [(0, 100)]
+        assert encode_lnotab([]) == b""
+        assert encode_linetable([]) == b""
+
+        assert parse_lnotab(b"", 100) == [(0, 100)]
+        assert parse_linetable(b"", 100) == [(0, 100)]
 
     def test_single_entry(self):
         """Test with single entry (should produce empty encoding)."""
         pairs = [(0, 100)]
-        
-        assert encode_lnotab(pairs) == b''
-        assert encode_linetable(pairs) == b''
+
+        assert encode_lnotab(pairs) == b""
+        assert encode_linetable(pairs) == b""
 
 
 class TestRoundtripSimple:
@@ -112,13 +112,13 @@ class TestRoundtripSimple:
             [(0, 100), (10, 105), (20, 110)],
             [(0, 50), (5, 55), (10, 50), (15, 60)],  # includes line going backward
         ]
-        
+
         for pairs in test_cases:
             # lnotab roundtrip
             lnotab_encoded = encode_lnotab(pairs)
             lnotab_decoded = parse_lnotab(lnotab_encoded, pairs[0][1])
             assert lnotab_decoded == pairs
-            
+
             # linetable roundtrip
             linetable_encoded = encode_linetable(pairs)
             linetable_decoded = parse_linetable(linetable_encoded, pairs[0][1])
@@ -211,7 +211,9 @@ class TestLineNumberPatcherBasic:
 
         # Mock the patching method to avoid ctypes complexity
         with patch.object(patcher, "try_patch_attr") as mock_patch:
-            result = patcher.patch_single_code_object_lines(test_function, new_line, "test_function")
+            result = patcher.patch_single_code_object_lines(
+                test_function, new_line, "test_function"
+            )
 
         assert result is True
         mock_patch.assert_called_once()
@@ -235,7 +237,9 @@ class TestLineNumberPatcherBasic:
         ), warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
 
-            result = patcher.patch_single_code_object_lines(test_function, 100, "test_function")
+            result = patcher.patch_single_code_object_lines(
+                test_function, 100, "test_function"
+            )
 
         assert result is False
         assert len(w) == 1
@@ -343,7 +347,9 @@ def test_real_line_patching():
     new_line = original_line + 50
 
     # Test actual patching (this will use ctypes)
-    success = patcher.patch_single_code_object_lines(test_function, new_line, "test_function")
+    success = patcher.patch_single_code_object_lines(
+        test_function, new_line, "test_function"
+    )
 
     # The success depends on the environment, but should handle gracefully
     assert isinstance(success, bool)

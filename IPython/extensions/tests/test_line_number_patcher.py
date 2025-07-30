@@ -353,7 +353,9 @@ class TestLineNumberPatching:
         ), warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
 
-            result = self.patcher.patch_single_code_object_lines(test_function, 100, "test_function")
+            result = self.patcher.patch_single_code_object_lines(
+                test_function, 100, "test_function"
+            )
 
         assert result is False
         assert len(w) == 1
@@ -635,7 +637,9 @@ class TestIntegration:
         new_line = original_line + 20
 
         # Test the complete workflow
-        result = patcher.patch_single_code_object_lines(original_function, new_line, "original_function")
+        result = patcher.patch_single_code_object_lines(
+            original_function, new_line, "original_function"
+        )
 
         # The result depends on whether ctypes patching actually works
         # In test environment, it might fail, but should handle gracefully

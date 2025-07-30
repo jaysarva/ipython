@@ -87,7 +87,9 @@ class TestParseCoLineTable:
 class TestParseCoLnotab:
     """Tests for :pyfunc:`parse_co_lnotab`."""
 
-    @pytest.mark.skipif(sys.version_info >= (3, 11), reason="co_lnotab deprecated on ≥3.11")
+    @pytest.mark.skipif(
+        sys.version_info >= (3, 11), reason="co_lnotab deprecated on ≥3.11"
+    )
     def test_basic_structure(self):
         code = _make_sample_function()
         pairs = parse_co_lnotab(code)
@@ -103,7 +105,9 @@ class TestParseCoLnotab:
         lines = [p[1] for p in pairs]
         assert all(l >= code.co_firstlineno for l in lines)
 
-    @pytest.mark.skipif(sys.version_info >= (3, 11), reason="co_lnotab deprecated on ≥3.11")
+    @pytest.mark.skipif(
+        sys.version_info >= (3, 11), reason="co_lnotab deprecated on ≥3.11"
+    )
     def test_consistency_with_linetable(self):
         """The legacy lnotab mapping should be a subset of the PEP 626 mapping."""
         code = _make_sample_function()
@@ -113,7 +117,7 @@ class TestParseCoLnotab:
         # Convert to dict for fast lookup.
         linetable_dict = dict(linetable_pairs)
         for offset, line in lnotab_pairs:
-            assert linetable_dict[offset] == line 
+            assert linetable_dict[offset] == line
 
 
 class TestUlebSlebHelpers:
@@ -122,7 +126,7 @@ class TestUlebSlebHelpers:
     def test_uleb128_basic(self):
         """Test basic ULEB128 encoding/decoding."""
         test_values = [0, 1, 127, 128, 255, 256, 16383, 16384, 2097151, 2097152]
-        
+
         for value in test_values:
             encoded = _encode_uleb128(value)
             decoded, consumed = _decode_uleb128(encoded)
@@ -136,8 +140,22 @@ class TestUlebSlebHelpers:
 
     def test_sleb128_basic(self):
         """Test basic SLEB128 encoding/decoding."""
-        test_values = [-128, -127, -1, 0, 1, 63, 64, 127, 128, -129, -16384, 16383, 16384]
-        
+        test_values = [
+            -128,
+            -127,
+            -1,
+            0,
+            1,
+            63,
+            64,
+            127,
+            128,
+            -129,
+            -16384,
+            16383,
+            16384,
+        ]
+
         for value in test_values:
             encoded = _encode_sleb128(value)
             decoded, consumed = _decode_sleb128(encoded)
@@ -146,8 +164,17 @@ class TestUlebSlebHelpers:
 
     def test_uleb128_large_values(self):
         """Test ULEB128 with large values."""
-        large_values = [2**7 - 1, 2**7, 2**14 - 1, 2**14, 2**21 - 1, 2**21, 2**28 - 1, 2**28]
-        
+        large_values = [
+            2**7 - 1,
+            2**7,
+            2**14 - 1,
+            2**14,
+            2**21 - 1,
+            2**21,
+            2**28 - 1,
+            2**28,
+        ]
+
         for value in large_values:
             encoded = _encode_uleb128(value)
             decoded, consumed = _decode_uleb128(encoded)
@@ -156,7 +183,7 @@ class TestUlebSlebHelpers:
     def test_sleb128_edge_cases(self):
         """Test SLEB128 edge cases around sign boundaries."""
         edge_cases = [-64, -63, 63, 64, -8192, -8191, 8191, 8192]
-        
+
         for value in edge_cases:
             encoded = _encode_sleb128(value)
             decoded, consumed = _decode_sleb128(encoded)
@@ -166,17 +193,19 @@ class TestUlebSlebHelpers:
         """Test handling of incomplete ULEB/SLEB sequences."""
         # Incomplete ULEB128 (all bytes have continuation bit set)
         with pytest.raises(ValueError, match="Incomplete ULEB128 sequence"):
-            _decode_uleb128(b'\x80\x80\x80')
-        
+            _decode_uleb128(b"\x80\x80\x80")
+
         # Incomplete SLEB128
         with pytest.raises(ValueError, match="Incomplete SLEB128 sequence"):
-            _decode_sleb128(b'\x80\x80\x80')
+            _decode_sleb128(b"\x80\x80\x80")
 
 
 class TestStandaloneParsers:
     """Tests for standalone parse_lnotab and parse_linetable functions."""
 
-    @pytest.mark.skipif(sys.version_info >= (3, 11), reason="co_lnotab deprecated on ≥3.11")
+    @pytest.mark.skipif(
+        sys.version_info >= (3, 11), reason="co_lnotab deprecated on ≥3.11"
+    )
     def test_parse_lnotab_matches_co_version(self):
         """Standalone parse_lnotab should match parse_co_lnotab."""
         code = _make_sample_function()
@@ -190,7 +219,7 @@ class TestStandaloneParsers:
         code = _make_sample_function()
         co_result = parse_co_linetable(code)
         standalone_result = parse_linetable(code.co_linetable, code.co_firstlineno)
-        
+
         # Note: These might not be exactly equal due to differences in how
         # co_lines() handles certain edge cases vs our manual parser
         # But they should have the same basic structure
@@ -199,12 +228,12 @@ class TestStandaloneParsers:
 
     def test_parse_lnotab_empty(self):
         """Test parse_lnotab with empty input."""
-        result = parse_lnotab(b'', 100)
+        result = parse_lnotab(b"", 100)
         assert result == [(0, 100)]
 
     def test_parse_linetable_empty(self):
         """Test parse_linetable with empty input."""
-        result = parse_linetable(b'', 100)
+        result = parse_linetable(b"", 100)
         assert result == [(0, 100)]
 
 
@@ -215,20 +244,20 @@ class TestEncodeHelpers:
         """Test basic lnotab encoding."""
         pairs = [(0, 10), (2, 11), (4, 11), (6, 13)]
         encoded = encode_lnotab(pairs)
-        
+
         # Decode back and check
         decoded = parse_lnotab(encoded, 10)
         assert decoded == pairs
 
     def test_encode_lnotab_empty(self):
         """Test encoding empty pairs."""
-        assert encode_lnotab([]) == b''
+        assert encode_lnotab([]) == b""
 
     def test_encode_lnotab_single_entry(self):
         """Test encoding with only the initial (0, firstlineno) entry."""
         pairs = [(0, 100)]
         encoded = encode_lnotab(pairs)
-        assert encoded == b''  # Should be empty since no deltas
+        assert encoded == b""  # Should be empty since no deltas
 
     def test_encode_lnotab_large_deltas(self):
         """Test lnotab encoding with large deltas that need splitting."""
@@ -259,26 +288,26 @@ class TestEncodeHelpers:
     def test_encode_lnotab_complex(self):
         """Test lnotab encoding with a complex sequence."""
         original_pairs = [
-            (0, 100),   # start
-            (2, 101),   # +1 line
-            (4, 101),   # same line
-            (6, 99),    # -2 lines
-            (8, 102),   # +3 lines
-            (500, 103), # large addr delta, +1 line
+            (0, 100),  # start
+            (2, 101),  # +1 line
+            (4, 101),  # same line
+            (6, 99),  # -2 lines
+            (8, 102),  # +3 lines
+            (500, 103),  # large addr delta, +1 line
         ]
         encoded = encode_lnotab(original_pairs)
         decoded = parse_lnotab(encoded, 100)
-        
+
         # Should have intermediate entries for the large address delta (500 - 8 = 492)
         # 492 = 255 + 237, so we get intermediate entry at address 8 + 255 = 263
         expected = [
-            (0, 100),   # start
-            (2, 101),   # +1 line
-            (4, 101),   # same line (address changes, line stays same)
-            (6, 99),    # -2 lines
-            (8, 102),   # +3 lines
-            (263, 102), # intermediate: +255 addr, 0 line change
-            (500, 103), # final: +237 addr, +1 line
+            (0, 100),  # start
+            (2, 101),  # +1 line
+            (4, 101),  # same line (address changes, line stays same)
+            (6, 99),  # -2 lines
+            (8, 102),  # +3 lines
+            (263, 102),  # intermediate: +255 addr, 0 line change
+            (500, 103),  # final: +237 addr, +1 line
         ]
         assert decoded == expected
 
@@ -286,20 +315,20 @@ class TestEncodeHelpers:
         """Test basic linetable encoding."""
         pairs = [(0, 10), (2, 11), (4, 11), (6, 13)]
         encoded = encode_linetable(pairs)
-        
+
         # Decode back and check
         decoded = parse_linetable(encoded, 10)
         assert decoded == pairs
 
     def test_encode_linetable_empty(self):
         """Test encoding empty pairs."""
-        assert encode_linetable([]) == b''
+        assert encode_linetable([]) == b""
 
     def test_encode_linetable_single_entry(self):
         """Test encoding with only the initial (0, firstlineno) entry."""
         pairs = [(0, 100)]
         encoded = encode_linetable(pairs)
-        assert encoded == b''  # Should be empty since no deltas
+        assert encoded == b""  # Should be empty since no deltas
 
     def test_encode_linetable_large_deltas(self):
         """Test linetable encoding with large deltas."""
@@ -324,12 +353,12 @@ class TestEncodeHelpers:
     def test_encode_linetable_complex(self):
         """Test linetable encoding with a complex sequence."""
         pairs = [
-            (0, 100),     # start
-            (2, 101),     # +1 line
-            (4, 101),     # same line
-            (6, 99),      # -2 lines
-            (8, 102),     # +3 lines
-            (1000, 50),   # large addr delta, -52 lines
+            (0, 100),  # start
+            (2, 101),  # +1 line
+            (4, 101),  # same line
+            (6, 99),  # -2 lines
+            (8, 102),  # +3 lines
+            (1000, 50),  # large addr delta, -52 lines
         ]
         encoded = encode_linetable(pairs)
         decoded = parse_linetable(encoded, 100)
@@ -339,16 +368,18 @@ class TestEncodeHelpers:
 class TestRoundtripConsistency:
     """Tests to ensure encoding/decoding roundtrips work correctly."""
 
-    @pytest.mark.skipif(sys.version_info >= (3, 11), reason="co_lnotab deprecated on ≥3.11")
+    @pytest.mark.skipif(
+        sys.version_info >= (3, 11), reason="co_lnotab deprecated on ≥3.11"
+    )
     def test_lnotab_roundtrip_real_code(self):
         """Test lnotab roundtrip with real code objects."""
         code = _make_sample_function()
         original_pairs = parse_co_lnotab(code)
-        
+
         # Encode and decode back
         encoded = encode_lnotab(original_pairs)
         decoded_pairs = parse_lnotab(encoded, code.co_firstlineno)
-        
+
         assert decoded_pairs == original_pairs
 
     @pytest.mark.skipif(sys.version_info < (3, 11), reason="co_linetable only on ≥3.11")
@@ -356,11 +387,11 @@ class TestRoundtripConsistency:
         """Test linetable roundtrip with real code objects."""
         code = _make_sample_function()
         original_pairs = parse_co_linetable(code)
-        
+
         # Encode and decode back
         encoded = encode_linetable(original_pairs)
         decoded_pairs = parse_linetable(encoded, code.co_firstlineno)
-        
+
         assert decoded_pairs == original_pairs
 
     def test_synthetic_data_roundtrips(self):
@@ -375,13 +406,13 @@ class TestRoundtripConsistency:
             # Mixed patterns
             [(0, 50), (1, 51), (10, 51), (20, 49), (100, 52)],
         ]
-        
+
         for pairs in test_cases:
             # Test lnotab roundtrip
             lnotab_encoded = encode_lnotab(pairs)
             lnotab_decoded = parse_lnotab(lnotab_encoded, pairs[0][1])
             assert lnotab_decoded == pairs, f"lnotab failed for {pairs}"
-            
+
             # Test linetable roundtrip
             linetable_encoded = encode_linetable(pairs)
             linetable_decoded = parse_linetable(linetable_encoded, pairs[0][1])
@@ -394,7 +425,7 @@ class TestShiftedLineTable:
     def _make_test_function(self, start_line=10):
         """Create a test function starting at a specific line for testing."""
         # Create enough blank lines to reach the desired start_line
-        padding = '\n' * (start_line - 1)
+        padding = "\n" * (start_line - 1)
         code_template = f"""{padding}def test_func(x):
     y = x + 1  # line {start_line + 1}
     if y > 0:  # line {start_line + 2}
@@ -403,20 +434,20 @@ class TestShiftedLineTable:
         return 0  # line {start_line + 5}
 """
         # Compile the code and extract the function's code object
-        compiled = compile(code_template, '<test>', 'exec')
-        
+        compiled = compile(code_template, "<test>", "exec")
+
         # Execute and get the function
         namespace = {}
         exec(compiled, namespace)
-        return namespace['test_func'].__code__
+        return namespace["test_func"].__code__
 
     def test_no_shift_needed(self):
         """Test when no shifts are needed (empty delta_map)."""
         code = self._make_test_function(start_line=10)
         delta_map = {}
-        
+
         new_code = shifted_line_table(code, delta_map)
-        
+
         # Should be identical
         assert new_code.co_firstlineno == code.co_firstlineno
         if sys.version_info < (3, 11):
@@ -429,12 +460,12 @@ class TestShiftedLineTable:
         code = self._make_test_function(start_line=10)
         # Insert 5 lines before line 10 - everything shifts by +5
         delta_map = {10: 5}
-        
+
         new_code = shifted_line_table(code, delta_map)
-        
+
         # First line should be shifted
         assert new_code.co_firstlineno == code.co_firstlineno + 5
-        
+
         # Parse line tables and verify all lines shifted
         if sys.version_info < (3, 11):
             old_pairs = parse_lnotab(code.co_lnotab, code.co_firstlineno)
@@ -442,7 +473,7 @@ class TestShiftedLineTable:
         else:
             old_pairs = parse_linetable(code.co_linetable, code.co_firstlineno)
             new_pairs = parse_linetable(new_code.co_linetable, new_code.co_firstlineno)
-        
+
         # Check that all lines are shifted by +5
         assert len(new_pairs) == len(old_pairs)
         for (old_addr, old_line), (new_addr, new_line) in zip(old_pairs, new_pairs):
@@ -451,15 +482,17 @@ class TestShiftedLineTable:
 
     def test_simple_negative_shift(self):
         """Test shifting all lines by a negative amount."""
-        code = self._make_test_function(start_line=50)  # Start higher so we can shift down
+        code = self._make_test_function(
+            start_line=50
+        )  # Start higher so we can shift down
         # Remove 10 lines before line 50 - everything shifts by -10
         delta_map = {50: -10}
-        
+
         new_code = shifted_line_table(code, delta_map)
-        
+
         # First line should be shifted
         assert new_code.co_firstlineno == code.co_firstlineno - 10
-        
+
         # Parse line tables and verify all lines shifted
         if sys.version_info < (3, 11):
             old_pairs = parse_lnotab(code.co_lnotab, code.co_firstlineno)
@@ -467,7 +500,7 @@ class TestShiftedLineTable:
         else:
             old_pairs = parse_linetable(code.co_linetable, code.co_firstlineno)
             new_pairs = parse_linetable(new_code.co_linetable, new_code.co_firstlineno)
-        
+
         # Check that all lines are shifted by -10
         assert len(new_pairs) == len(old_pairs)
         for (old_addr, old_line), (new_addr, new_line) in zip(old_pairs, new_pairs):
@@ -479,12 +512,12 @@ class TestShiftedLineTable:
         code = self._make_test_function(start_line=10)
         # Insert 3 lines at line 12 - only lines >= 12 should shift
         delta_map = {12: 3}
-        
+
         new_code = shifted_line_table(code, delta_map)
-        
+
         # First line should NOT be shifted (it's line 10 < 12)
         assert new_code.co_firstlineno == code.co_firstlineno
-        
+
         # Parse line tables
         if sys.version_info < (3, 11):
             old_pairs = parse_lnotab(code.co_lnotab, code.co_firstlineno)
@@ -492,7 +525,7 @@ class TestShiftedLineTable:
         else:
             old_pairs = parse_linetable(code.co_linetable, code.co_firstlineno)
             new_pairs = parse_linetable(new_code.co_linetable, new_code.co_firstlineno)
-        
+
         # Check selective shifting
         assert len(new_pairs) == len(old_pairs)
         for (old_addr, old_line), (new_addr, new_line) in zip(old_pairs, new_pairs):
@@ -507,9 +540,9 @@ class TestShiftedLineTable:
         code = self._make_test_function(start_line=10)
         # Multiple insertions: +2 at line 11, +5 at line 13
         delta_map = {11: 2, 13: 5}
-        
+
         new_code = shifted_line_table(code, delta_map)
-        
+
         # Parse line tables
         if sys.version_info < (3, 11):
             old_pairs = parse_lnotab(code.co_lnotab, code.co_firstlineno)
@@ -517,7 +550,7 @@ class TestShiftedLineTable:
         else:
             old_pairs = parse_linetable(code.co_linetable, code.co_firstlineno)
             new_pairs = parse_linetable(new_code.co_linetable, new_code.co_firstlineno)
-        
+
         # Check cumulative shifting
         assert len(new_pairs) == len(old_pairs)
         for (old_addr, old_line), (new_addr, new_line) in zip(old_pairs, new_pairs):
@@ -533,20 +566,20 @@ class TestShiftedLineTable:
         """Test large shifts that exceed lnotab limits (>127 lines)."""
         if sys.version_info >= (3, 11):
             pytest.skip("Test specific to lnotab format (Python ≤ 3.10)")
-            
+
         code = self._make_test_function(start_line=10)
         # Large shift that will require splitting in lnotab encoding
         delta_map = {10: 300}  # Shift by 300 lines
-        
+
         new_code = shifted_line_table(code, delta_map)
-        
+
         # Should still work correctly despite encoding limitations
         assert new_code.co_firstlineno == code.co_firstlineno + 300
-        
+
         # Parse and verify
         old_pairs = parse_lnotab(code.co_lnotab, code.co_firstlineno)
         new_pairs = parse_lnotab(new_code.co_lnotab, new_code.co_firstlineno)
-        
+
         # All lines should be shifted by +300
         for (old_addr, old_line), (new_addr, new_line) in zip(old_pairs, new_pairs):
             assert new_addr == old_addr
@@ -557,12 +590,12 @@ class TestShiftedLineTable:
         code = self._make_test_function(start_line=1000)  # Start very high
         # Large negative shift
         delta_map = {1000: -500}
-        
+
         new_code = shifted_line_table(code, delta_map)
-        
+
         # Should work correctly
         assert new_code.co_firstlineno == code.co_firstlineno - 500
-        
+
         # Parse and verify
         if sys.version_info < (3, 11):
             old_pairs = parse_lnotab(code.co_lnotab, code.co_firstlineno)
@@ -570,7 +603,7 @@ class TestShiftedLineTable:
         else:
             old_pairs = parse_linetable(code.co_linetable, code.co_firstlineno)
             new_pairs = parse_linetable(new_code.co_linetable, new_code.co_firstlineno)
-        
+
         # All lines should be shifted by -500
         for (old_addr, old_line), (new_addr, new_line) in zip(old_pairs, new_pairs):
             assert new_addr == old_addr
@@ -579,34 +612,38 @@ class TestShiftedLineTable:
     def test_roundtrip_consistency(self):
         """Test that shifting and shifting back gives original result."""
         code = self._make_test_function(start_line=100)
-        
+
         # Apply forward shift
         delta_map_forward = {100: 50}
         shifted_code = shifted_line_table(code, delta_map_forward)
-        
+
         # Apply reverse shift
         delta_map_reverse = {150: -50}  # 100 + 50 = 150
         restored_code = shifted_line_table(shifted_code, delta_map_reverse)
-        
+
         # Should be back to original
         assert restored_code.co_firstlineno == code.co_firstlineno
-        
+
         if sys.version_info < (3, 11):
             original_pairs = parse_lnotab(code.co_lnotab, code.co_firstlineno)
-            restored_pairs = parse_lnotab(restored_code.co_lnotab, restored_code.co_firstlineno)
+            restored_pairs = parse_lnotab(
+                restored_code.co_lnotab, restored_code.co_firstlineno
+            )
         else:
             original_pairs = parse_linetable(code.co_linetable, code.co_firstlineno)
-            restored_pairs = parse_linetable(restored_code.co_linetable, restored_code.co_firstlineno)
-        
+            restored_pairs = parse_linetable(
+                restored_code.co_linetable, restored_code.co_firstlineno
+            )
+
         assert restored_pairs == original_pairs
 
     def test_edge_case_zero_delta(self):
         """Test edge case where delta is zero."""
         code = self._make_test_function(start_line=10)
         delta_map = {10: 0}  # No actual shift
-        
+
         new_code = shifted_line_table(code, delta_map)
-        
+
         # Should be unchanged
         assert new_code.co_firstlineno == code.co_firstlineno
         if sys.version_info < (3, 11):
@@ -619,9 +656,9 @@ class TestShiftedLineTable:
         code = self._make_test_function(start_line=10)
         # Insert after all existing lines (assuming function ends around line 15)
         delta_map = {100: 50}  # Way after the function
-        
+
         new_code = shifted_line_table(code, delta_map)
-        
+
         # Should be unchanged since no lines are >= 100
         assert new_code.co_firstlineno == code.co_firstlineno
         if sys.version_info < (3, 11):
@@ -632,7 +669,7 @@ class TestShiftedLineTable:
     def test_complex_scenario(self):
         """Test a complex real-world-like scenario with multiple functions."""
         # Create a more complex function with loops and conditionals
-        complex_code = '''
+        complex_code = """
 def complex_func(items):
     total = 0
     for item in items:
@@ -643,21 +680,21 @@ def complex_func(items):
         else:
             continue
     return total
-'''
-        compiled = compile(complex_code, '<test>', 'exec')
+"""
+        compiled = compile(complex_code, "<test>", "exec")
         namespace = {}
         exec(compiled, namespace)
-        code = namespace['complex_func'].__code__
-        
+        code = namespace["complex_func"].__code__
+
         # Multiple shifts simulating real editing
         delta_map = {
-            2: 3,   # Insert 3 lines at start of function
+            2: 3,  # Insert 3 lines at start of function
             5: -2,  # Remove 2 lines in middle
             8: 10,  # Insert 10 lines near end
         }
-        
+
         new_code = shifted_line_table(code, delta_map)
-        
+
         # Verify the transformation worked
         if sys.version_info < (3, 11):
             old_pairs = parse_lnotab(code.co_lnotab, code.co_firstlineno)
@@ -665,7 +702,7 @@ def complex_func(items):
         else:
             old_pairs = parse_linetable(code.co_linetable, code.co_firstlineno)
             new_pairs = parse_linetable(new_code.co_linetable, new_code.co_firstlineno)
-        
+
         # Verify proper cumulative shifting
         for (old_addr, old_line), (new_addr, new_line) in zip(old_pairs, new_pairs):
             assert new_addr == old_addr
@@ -690,52 +727,63 @@ def calculate_total(items):
             total += item
     return total
 '''
-        
+
         # Compile and get code object
-        compiled = compile(original_source, '<module>', 'exec')
+        compiled = compile(original_source, "<module>", "exec")
         namespace = {}
         exec(compiled, namespace)
-        original_code = namespace['calculate_total'].__code__
-        
+        original_code = namespace["calculate_total"].__code__
+
         # Simulate editing: add 3 lines of comments at the beginning
         # This would shift all lines >= original start line by +3
         delta_map = {original_code.co_firstlineno: 3}
-        
+
         # Apply our line table patching
         patched_code = shifted_line_table(original_code, delta_map)
-        
+
         # Verify the patch worked
         assert patched_code.co_firstlineno == original_code.co_firstlineno + 3
-        
+
         # Parse both line tables to verify all lines shifted correctly
         if sys.version_info < (3, 11):
-            orig_pairs = parse_lnotab(original_code.co_lnotab, original_code.co_firstlineno)
-            new_pairs = parse_lnotab(patched_code.co_lnotab, patched_code.co_firstlineno)
+            orig_pairs = parse_lnotab(
+                original_code.co_lnotab, original_code.co_firstlineno
+            )
+            new_pairs = parse_lnotab(
+                patched_code.co_lnotab, patched_code.co_firstlineno
+            )
         else:
-            orig_pairs = parse_linetable(original_code.co_linetable, original_code.co_firstlineno)
-            new_pairs = parse_linetable(patched_code.co_linetable, patched_code.co_firstlineno)
-        
+            orig_pairs = parse_linetable(
+                original_code.co_linetable, original_code.co_firstlineno
+            )
+            new_pairs = parse_linetable(
+                patched_code.co_linetable, patched_code.co_firstlineno
+            )
+
         # Every line should be shifted by exactly +3
         assert len(orig_pairs) == len(new_pairs)
         for (orig_addr, orig_line), (new_addr, new_line) in zip(orig_pairs, new_pairs):
             assert new_addr == orig_addr  # Bytecode addresses unchanged
             assert new_line == orig_line + 3  # All lines shifted by +3
-        
+
         # Verify the patched code object is functional
         # Replace the original function's code with our patched version
         import types
+
         patched_function = types.FunctionType(
-            patched_code,
-            namespace,
-            'calculate_total'
+            patched_code, namespace, "calculate_total"
         )
-        
+
         # The function should still work correctly
-        result = patched_function([1, 2, 3, 'ignore', 4.5])
+        result = patched_function([1, 2, 3, "ignore", 4.5])
         assert result == 10.5
-        
-        print(f"✓ Successfully patched function from line {original_code.co_firstlineno} to line {patched_code.co_firstlineno}")
-        print(f"✓ Function still works correctly: calculate_total([1, 2, 3, 'ignore', 4.5]) = {result}")
+
+        print(
+            f"✓ Successfully patched function from line {original_code.co_firstlineno} to line {patched_code.co_firstlineno}"
+        )
+        print(
+            f"✓ Function still works correctly: calculate_total([1, 2, 3, 'ignore', 4.5]) = {result}"
+        )
 
 
 class TestEdgeCases:
@@ -744,14 +792,14 @@ class TestEdgeCases:
     def test_malformed_lnotab(self):
         """Test parsing malformed lnotab data."""
         # Odd length (missing second byte of pair)
-        result = parse_lnotab(b'\x02', 10)
+        result = parse_lnotab(b"\x02", 10)
         assert result == [(0, 10)]  # Should just ignore incomplete pair
 
     def test_negative_line_numbers(self):
         """Test handling of negative line numbers."""
         # Create pairs with negative line numbers
         pairs = [(0, -5), (2, -3), (4, -10)]
-        
+
         # Should work for linetable (SLEB128 supports negative values)
         encoded = encode_linetable(pairs)
         decoded = parse_linetable(encoded, -5)
@@ -760,7 +808,7 @@ class TestEdgeCases:
     def test_zero_deltas(self):
         """Test handling of zero deltas."""
         pairs = [(0, 10), (0, 10), (2, 10)]  # Some zero address deltas
-        
+
         # For lnotab, zero address deltas should be skipped
         encoded = encode_lnotab(pairs)
         decoded = parse_lnotab(encoded, 10)
@@ -770,8 +818,8 @@ class TestEdgeCases:
     def test_very_large_numbers(self):
         """Test with very large line/address numbers."""
         pairs = [(0, 1000000), (500000, 2000000)]
-        
+
         # Should work for linetable
         encoded = encode_linetable(pairs)
         decoded = parse_linetable(encoded, 1000000)
-        assert decoded == pairs 
+        assert decoded == pairs
