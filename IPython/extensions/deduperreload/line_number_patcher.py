@@ -611,20 +611,15 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
                     return cached_source
 
             # If no cached source found, try to get it directly
-            # This is a fallback that may not always work
             try:
                 import inspect
 
                 frame = inspect.currentframe()
                 while frame:
                     if frame.f_code.co_filename == filename:
-                        # Found a frame from the same file, try to get its source
-                        try:
-                            return inspect.getsource(
-                                frame.f_globals.get("__main__", None)
-                            )
-                        except:
-                            pass
+                        main_module = frame.f_globals.get("__main__")
+                        if main_module is not None:
+                            return inspect.getsource(main_module)
                     frame = frame.f_back
             except:
                 pass
@@ -936,7 +931,7 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
             "modules_tracked": len(self.source_tracker.module_snapshots),
         }
 
-    def _has_wrapper_closures(self, func) -> bool:
+    def _has_wrapper_closures(self, func: FunctionType) -> bool:
         """Detect if function has wrapper closures from decorators."""
         if not hasattr(func, "__closure__") or not func.__closure__:
             return False

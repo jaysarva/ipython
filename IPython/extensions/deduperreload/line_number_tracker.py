@@ -67,9 +67,9 @@ class ModuleSourceTracker:
 
     def __init__(self) -> None:
         self.module_snapshots: Dict[str, str] = {}  # module_name -> source
-        self.code_positions: Dict[
-            str, Dict[str, CodePosition]
-        ] = {}  # module_name -> {name -> position}
+        self.code_positions: Dict[str, Dict[str, CodePosition]] = (
+            {}
+        )  # module_name -> {name -> position}
 
     def track_module_source(self, module: Any) -> str:
         """Get and cache current module source code.

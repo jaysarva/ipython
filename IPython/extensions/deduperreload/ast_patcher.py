@@ -104,7 +104,7 @@ class SourceCodeExtractor:
     - Cached source management
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the source code extractor."""
         self.source_cache: Dict[str, str] = {}
 
@@ -190,7 +190,7 @@ class FunctionExtractor(ast.NodeVisitor):
             target_function: Name of the function to extract
         """
         self.target_function = target_function
-        self.found_function: Optional[ast.FunctionDef] = None
+        self.found_function: Optional[ast.FunctionDef | ast.AsyncFunctionDef] = None
         self.class_context: List[str] = []
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
@@ -246,7 +246,7 @@ class ASTPatcher:
     for Python 3.11+ due to changes in the line number table format.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the AST patcher."""
         self.source_extractor = SourceCodeExtractor()
         self.compilation_cache: Dict[str, types.CodeType] = {}
@@ -283,6 +283,8 @@ class ASTPatcher:
         try:
             # Parse source code into AST
             tree = ast.parse(source_code, filename=old_code.co_filename)
+            if not isinstance(tree, ast.Module):
+                raise ValueError(f"Expected Module AST, got {type(tree)}")
 
             # For reloaded functions, we compile the current source as-is
             # The AST already has the correct line numbers from the current source
@@ -306,7 +308,11 @@ class ASTPatcher:
             raise
 
     def _compile_specific_function(
-        self, tree: ast.AST, old_code: types.CodeType, function_name: str, obj_name: str
+        self,
+        tree: ast.Module,
+        old_code: types.CodeType,
+        function_name: str,
+        obj_name: str,
     ) -> types.CodeType:
         """
         Compile a specific function from the module AST.
@@ -336,7 +342,11 @@ class ASTPatcher:
             return old_code
 
     def _compile_and_extract_function(
-        self, tree: ast.AST, old_code: types.CodeType, function_name: str, obj_name: str
+        self,
+        tree: ast.Module,
+        old_code: types.CodeType,
+        function_name: str,
+        obj_name: str,
     ) -> types.CodeType:
         """
         Compile entire module and extract specific function code.
@@ -359,7 +369,7 @@ class ASTPatcher:
             compiled_module = compile(tree, old_code.co_filename, "exec")
 
             # Execute to create namespace
-            namespace = {}
+            namespace: Dict[str, Any] = {}
             exec(compiled_module, namespace)
 
             # Extract function using various strategies
@@ -413,7 +423,7 @@ class ASTPatcher:
             for part in parts:
                 if hasattr(obj, part):
                     obj = getattr(obj, part)
-                elif isinstance(obj, dict) and part in obj:
+                elif part in obj:
                     obj = obj[part]
                 else:
                     return None
