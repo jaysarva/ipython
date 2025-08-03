@@ -20,12 +20,14 @@ import ast
 import sys
 import textwrap
 from types import ModuleType
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from IPython.extensions.deduperreload.change_detection import AutoreloadTree
 from IPython.extensions.deduperreload.dependency_graph import DependencyNode
 from IPython.extensions.deduperreload.line_number_patcher import LineNumberPatcher
-from IPython.extensions.deduperreload.deduperreload import DeduperReloader
+
+if TYPE_CHECKING:
+    from IPython.extensions.deduperreload.deduperreload import DeduperReloader
 
 
 class CodeExecutor:
@@ -413,12 +415,7 @@ class CodeExecutor:
             and isinstance(root_module, ModuleType)
         ):
             try:
-                # Note: force_update=True ensures all line numbers are updated
-                # even when no explicit shifts are detected. This is necessary
-                # because ANY change to a module can affect line numbers.
-                self.line_patcher.update_all_code_object_line_numbers(
-                    root_module, [], force_update=True
-                )
+                self.line_patcher.update_all_code_object_line_numbers(root_module)
             except Exception as e:
                 # Line number patching is optional - don't break main functionality
                 import warnings

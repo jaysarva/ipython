@@ -12,7 +12,7 @@ import ast
 import inspect
 import warnings
 from dataclasses import dataclass
-from typing import Dict, Set, List, Optional, Any
+from typing import Dict, Any
 
 
 @dataclass
@@ -66,10 +66,7 @@ class ModuleSourceTracker:
     """
 
     def __init__(self) -> None:
-        # Cache of module source code
         self.module_snapshots: Dict[str, str] = {}  # module_name -> source
-
-        # Cache of parsed code positions
         self.code_positions: Dict[
             str, Dict[str, CodePosition]
         ] = {}  # module_name -> {name -> position}
@@ -84,6 +81,18 @@ class ModuleSourceTracker:
             Source code string, empty if not available
         """
         module_name = module.__name__
+
+        # Check if module has a source file before attempting to get source
+        # Modules without __file__ (like synthetic modules created with ModuleType)
+        # will cause inspect.getsource() to raise TypeError with misleading
+        # "is a built-in module" message, when they're actually just sourceless
+        if not hasattr(module, "__file__") or getattr(module, "__file__", None) is None:
+            # Fall back to cached source if available for sourceless modules
+            cached_source = self.module_snapshots.get(module_name, "")
+            if not cached_source:
+                # Don't warn for synthetic modules - this is expected behavior
+                pass
+            return cached_source
 
         try:
             # Get fresh source code
@@ -322,91 +331,6 @@ class ModuleSourceTracker:
 
         # Recursively extract from nested class
         self._extract_class_methods(node, positions, nested_class_name)
-
-    def calculate_line_shifts(
-        self, module_name: str, reloaded_functions: Set[str]
-    ) -> List[LineShift]:
-        """Calculate how line numbers have shifted due to reloaded code objects.
-
-        This method compares the current positions with previously stored positions
-        to determine how many lines were added or removed by each reloaded function.
-
-        Args:
-            module_name: Name of the module being analyzed
-            reloaded_functions: Set of function names that were reloaded
-
-        Returns:
-            List of LineShift objects describing the changes, sorted by position
-        """
-        current_positions = self.code_positions.get(module_name, {})
-
-        # Note: This method is currently unused in the main line number patching
-        # logic, which uses force_update=True to update all positions. This is
-        # kept for potential future use with more sophisticated shift calculation.
-        old_positions: Dict[str, CodePosition] = {}  # Would need to be implemented
-
-        shifts = []
-        for func_name in reloaded_functions:
-            if func_name in old_positions and func_name in current_positions:
-                shift = self._calculate_single_shift(
-                    old_positions[func_name], current_positions[func_name], func_name
-                )
-                if shift:
-                    shifts.append(shift)
-
-        # Sort shifts by position for proper application order
-        shifts.sort(key=lambda s: s.position)
-        return shifts
-
-    def _calculate_single_shift(
-        self, old_pos: CodePosition, new_pos: CodePosition, func_name: str
-    ) -> LineShift | None:
-        """Calculate the line shift for a single function.
-
-        Args:
-            old_pos: Previous position of the function
-            new_pos: Current position of the function
-            func_name: Name of the function (for debugging)
-
-        Returns:
-            LineShift object if there was a size change, None otherwise
-        """
-        old_size = old_pos.size
-        new_size = new_pos.size
-        delta = new_size - old_size
-
-        if delta != 0:
-            return LineShift(position=old_pos.end_line, delta=delta, cause=func_name)
-        return None
-
-    def update_positions(
-        self, module_name: str, positions: Dict[str, CodePosition]
-    ) -> None:
-        """Update stored positions for a module.
-
-        Args:
-            module_name: Name of the module
-            positions: New position information to store
-        """
-        import copy
-
-        # Deep copy to ensure we don't retain references to caller's data
-        self.code_positions[module_name] = copy.deepcopy(positions)
-
-    def get_positions(self, module_name: str) -> Dict[str, CodePosition]:
-        """Get stored positions for a module.
-
-        Args:
-            module_name: Name of the module
-
-        Returns:
-            Dictionary of position information (deep copied for safety)
-        """
-        import copy
-
-        # Deep copy to prevent accidental modification of cached positions
-        # Note: This could be optimized with lazy copying if performance becomes an issue
-        return copy.deepcopy(self.code_positions.get(module_name, {}))
 
     def clear_module(self, module_name: str) -> None:
         """Clear all cached data for a module.
