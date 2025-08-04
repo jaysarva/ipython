@@ -645,7 +645,6 @@ class ASTPatcher:
         obj_name: str,
     ) -> types.CodeType:
         """Compile a property method (fget, fset, fdel) wrapped in a temporary class."""
-        # For properties, the obj_name is like "tmpmod_*.MyClass.bad_property.fget"
         # We need to extract the property getter function
 
         # Add the @property decorator to the function for proper compilation

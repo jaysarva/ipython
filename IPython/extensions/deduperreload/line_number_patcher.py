@@ -660,8 +660,8 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
             cleaned_name = obj_name[:-9]  # Remove '.__func__'
 
         # Now remove module prefix if present, but preserve class structure
-        # e.g., "tmpmod_xyz.MyClass.method" -> "MyClass.method"
-        # e.g., "tmpmod_xyz.my_function" -> "my_function"
+        # e.g., "module.MyClass.method" -> "MyClass.method"
+        # e.g., "module.my_function" -> "my_function"
         if "." in cleaned_name:
             parts = cleaned_name.split(".")
             # Try progressively longer prefixes to find the module name
