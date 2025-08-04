@@ -25,17 +25,19 @@ import ast
 import builtins
 import contextlib
 import itertools
-from typing import TYPE_CHECKING, Generator, Iterable, NamedTuple, cast
+from typing import TYPE_CHECKING, Generator, Iterable, NamedTuple, cast, Callable
 
 if TYPE_CHECKING:
-    TDefinitionAst = (
-        ast.FunctionDef
-        | ast.AsyncFunctionDef
-        | ast.Import
-        | ast.ImportFrom
-        | ast.Assign
-        | ast.AnnAssign
-    )
+    from typing import Union
+
+    TDefinitionAst = Union[
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.Import,
+        ast.ImportFrom,
+        ast.Assign,
+        ast.AnnAssign,
+    ]
 
 
 class ASTAnalyzer:
@@ -342,26 +344,72 @@ class ChangeDetector:
         result = GatherResult.create()
 
         for ast_node in body:
-            # Unwrap expression statements
             ast_elt = self._unwrap_expression(ast_node)
-
-            # Categorize the AST element
-            if isinstance(ast_elt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                self._gather_function_def(result, ast_elt)
-            elif isinstance(ast_elt, (ast.Import, ast.ImportFrom)):
-                self._gather_import_def(result, ast_elt)
-            elif isinstance(ast_elt, ast.ClassDef):
-                self._gather_class_def(result, ast_elt)
-            elif isinstance(ast_elt, ast.If):
-                self._gather_if_statement(result, ast_elt, parent_node)
-            elif isinstance(ast_elt, (ast.AsyncWith, ast.With)):
-                self._gather_with_statement(result, ast_elt, parent_node)
-            elif isinstance(ast_elt, ast.Try):
-                self._gather_try_statement(result, ast_elt, parent_node)
-            elif not isinstance(ast_elt, (ast.Ellipsis, ast.Pass)):
-                self._gather_other_statement(result, ast_elt, parent_node)
+            self._categorize_ast_element(result, ast_elt, parent_node)
 
         return result
+
+    def _categorize_ast_element(
+        self,
+        result: GatherResult,
+        ast_elt: ast.expr | ast.stmt,
+        parent_node: ast.Module | ast.ClassDef,
+    ) -> None:
+        """Categorize a single AST element using a unified dispatch pattern.
+
+        Args:
+            result: GatherResult to update
+            ast_elt: AST element to categorize
+            parent_node: Parent context
+        """
+        # Create dispatch table for cleaner control flow
+        handlers = {
+            (ast.FunctionDef, ast.AsyncFunctionDef): self._gather_function_def,
+            (ast.Import, ast.ImportFrom): self._gather_import_def,
+            ast.ClassDef: self._gather_class_def,
+            ast.If: lambda r, e: self._gather_control_flow_statement(r, e, parent_node),
+            (ast.AsyncWith, ast.With): lambda r, e: self._gather_control_flow_statement(
+                r, e, parent_node
+            ),
+            ast.Try: lambda r, e: self._gather_control_flow_statement(
+                r, e, parent_node
+            ),
+            ast.Pass: None,  # Skip these
+        }
+
+        # Find and execute appropriate handler
+        for types, handler in handlers.items():
+            if isinstance(ast_elt, cast(type | tuple[type, ...], types)):
+                if handler:  # Skip None handlers
+                    cast(
+                        Callable[[GatherResult, ast.expr | ast.stmt], object], handler
+                    )(result, ast_elt)
+                return
+
+        # Default case: handle as other statement (but skip ellipsis constants)
+        if isinstance(ast_elt, ast.Constant) and ast_elt.value is ...:
+            return  # Skip ellipsis constants
+        self._gather_other_statement(result, ast_elt, parent_node)
+
+    def _gather_control_flow_statement(
+        self,
+        result: GatherResult,
+        ast_elt: ast.stmt,
+        parent_node: ast.Module | ast.ClassDef,
+    ) -> None:
+        """Unified handler for control flow statements (if, with, try).
+
+        Args:
+            result: GatherResult to update
+            ast_elt: Control flow statement to process
+            parent_node: Parent context
+        """
+        if isinstance(ast_elt, ast.If):
+            self._gather_if_statement(result, ast_elt, parent_node)
+        elif isinstance(ast_elt, (ast.AsyncWith, ast.With)):
+            self._gather_with_statement(result, ast_elt, parent_node)
+        elif isinstance(ast_elt, ast.Try):
+            self._gather_try_statement(result, ast_elt, parent_node)
 
     @classmethod
     def _unwrap_expression(cls, ast_node: ast.stmt) -> ast.expr | ast.stmt:

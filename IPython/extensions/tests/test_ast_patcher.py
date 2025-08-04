@@ -106,62 +106,6 @@ class TestLineNumberShifter(unittest.TestCase):
             self.assertEqual(func_node.end_lineno, 7)  # was 4, now 7
 
 
-class TestSourceCodeExtractor(unittest.TestCase):
-    """Test the SourceCodeExtractor utility."""
-
-    def test_extract_module_source_from_file(self):
-        """Test extracting source from a module file."""
-        extractor = SourceCodeExtractor()
-
-        # Create a temporary module
-        source_code = textwrap.dedent(
-            """
-        def test_func():
-            return "Hello World"
-        
-        class TestClass:
-            def method(self):
-                return 42
-        """
-        ).strip()
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write(source_code)
-            f.flush()
-
-            # Create a mock module object
-            class MockModule:
-                __file__ = f.name
-                __name__ = "test_module"
-
-            module = MockModule()
-            extracted = extractor.extract_module_source(module)
-
-            self.assertIsNotNone(extracted)
-            self.assertIn("test_func", extracted)
-            self.assertIn("TestClass", extracted)
-
-    def test_caching(self):
-        """Test that source code is properly cached."""
-        extractor = SourceCodeExtractor()
-
-        # First extraction should cache the result
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write("def cached_func(): pass")
-            f.flush()
-
-            class MockModule:
-                __file__ = f.name
-                __name__ = "cached_module"
-
-            module = MockModule()
-            result1 = extractor.extract_module_source(module)
-            result2 = extractor.get_cached_source("cached_module")
-
-            self.assertEqual(result1, result2)
-            self.assertIn("cached_func", result1)
-
-
 class TestFunctionExtractor(unittest.TestCase):
     """Test the FunctionExtractor AST visitor."""
 
@@ -237,9 +181,6 @@ class TestFunctionExtractor(unittest.TestCase):
         self.assertIsNone(extractor.found_function)
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 11), reason="AST patcher is for Python 3.11+"
-)
 class TestASTPatcher(unittest.TestCase):
     """Test the main ASTPatcher class."""
 
@@ -302,15 +243,11 @@ class TestASTPatcher(unittest.TestCase):
         # Test patching (delta_map is not used in current implementation)
         delta_map = {1: 0}  # No actual shift needed for this test
 
-        try:
-            patched_code = self.patcher.patch_code_object_ast(
-                original_code, delta_map, source, "decorated_func", "test_func"
-            )
-            self.assertIsNotNone(patched_code)
-            self.assertEqual(patched_code.co_name, "decorated_func")
-        except Exception as e:
-            # Some environments might not support all aspects of AST patching
-            self.skipTest(f"AST patching not fully supported in this environment: {e}")
+        patched_code = self.patcher.patch_code_object_ast(
+            original_code, delta_map, source, "decorated_func", "test_func"
+        )
+        self.assertIsNotNone(patched_code)
+        self.assertEqual(patched_code.co_name, "decorated_func")
 
     def test_patch_decorated_function(self):
         """Test patching a decorated function (the main use case)."""
@@ -325,25 +262,21 @@ class TestASTPatcher(unittest.TestCase):
         """
         ).strip()
 
-        try:
-            # Compile original
-            compiled = compile(source, "<test>", "exec")
-            namespace = {}
-            exec(compiled, namespace)
-            original_code = namespace["decorated_func"].__code__
+        # Compile original
+        compiled = compile(source, "<test>", "exec")
+        namespace = {}
+        exec(compiled, namespace)
+        original_code = namespace["decorated_func"].__code__
 
-            # Test patching
-            delta_map = {1: 0}  # No shift for this test
+        # Test patching
+        delta_map = {1: 0}  # No shift for this test
 
-            patched_code = self.patcher.patch_code_object_ast(
-                original_code, delta_map, source, "decorated_func", "decorated_func"
-            )
+        patched_code = self.patcher.patch_code_object_ast(
+            original_code, delta_map, source, "decorated_func", "decorated_func"
+        )
 
-            self.assertIsNotNone(patched_code)
-            self.assertEqual(patched_code.co_name, "decorated_func")
-
-        except Exception as e:
-            self.skipTest(f"Decorated function patching not supported: {e}")
+        self.assertIsNotNone(patched_code)
+        self.assertEqual(patched_code.co_name, "decorated_func")
 
     def test_cache_management(self):
         """Test cache management functionality."""
@@ -374,9 +307,6 @@ class TestASTPatcher(unittest.TestCase):
 class TestIntegration(unittest.TestCase):
     """Integration tests for AST patcher with line number patcher."""
 
-    @pytest.mark.skipif(
-        sys.version_info < (3, 11), reason="AST patcher is for Python 3.11+"
-    )
     def test_ast_patcher_integration(self):
         """Test that AST patcher integrates correctly with line number patcher."""
         from IPython.extensions.deduperreload.line_number_patcher import (

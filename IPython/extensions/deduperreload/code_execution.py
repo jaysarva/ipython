@@ -102,20 +102,11 @@ class CodeExecutor:
         target_namespace = self._resolve_target_namespace(ns, prefixes)
         root_module = self._get_root_module(ns)
 
-        # Patch all definitions that need reloading
-        for names, new_ast_def in current_scope.defs_to_reload:
-            if isinstance(new_ast_def, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                # Handle function/method patching
-                if not self._patch_function_definition(
-                    names, new_ast_def, target_namespace, ns, prefixes
-                ):
-                    return False
-            else:
-                # Handle other definitions (imports, assignments, etc.)
-                if not self._patch_other_definition(
-                    names, new_ast_def, target_namespace, ns, prefixes
-                ):
-                    return False
+        # Patch all definitions that need reloading using unified approach
+        if not self._patch_all_definitions(
+            current_scope, target_namespace, ns, prefixes
+        ):
+            return False
 
         # Clean up completed reload operations
         self._cleanup_current_scope(current_scope, target_namespace, ns)
@@ -128,6 +119,61 @@ class CodeExecutor:
         self._update_line_numbers_if_needed(prefixes, root_module)
 
         return True
+
+    def _patch_all_definitions(
+        self,
+        current_scope: AutoreloadTree,
+        target_namespace: Any,
+        ns: ModuleType | type,
+        prefixes: list[str],
+    ) -> bool:
+        """Patch all definitions using a unified approach.
+
+        Args:
+            current_scope: AutoreloadTree containing definitions to patch
+            target_namespace: Target namespace to patch in
+            ns: Root namespace
+            prefixes: Namespace prefixes
+
+        Returns:
+            True if all patching succeeded, False otherwise
+        """
+        for names, new_ast_def in current_scope.defs_to_reload:
+            success = self._patch_single_definition(
+                names, new_ast_def, target_namespace, ns, prefixes
+            )
+            if not success:
+                return False
+        return True
+
+    def _patch_single_definition(
+        self,
+        names: tuple[str, ...],
+        new_ast_def: ast.AST,
+        target_namespace: Any,
+        ns: ModuleType | type,
+        prefixes: list[str],
+    ) -> bool:
+        """Patch a single definition using type-based dispatch.
+
+        Args:
+            names: Names to patch
+            new_ast_def: New AST definition
+            target_namespace: Target namespace
+            ns: Root namespace
+            prefixes: Namespace prefixes
+
+        Returns:
+            True if patching succeeded, False otherwise
+        """
+        if isinstance(new_ast_def, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return self._patch_function_definition(
+                names, new_ast_def, target_namespace, ns, prefixes
+            )
+        else:
+            return self._patch_other_definition(
+                names, new_ast_def, target_namespace, ns, prefixes
+            )
 
     def _resolve_target_namespace(
         self, ns: ModuleType | type, prefixes: list[str]

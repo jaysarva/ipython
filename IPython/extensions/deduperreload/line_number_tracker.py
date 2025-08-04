@@ -154,16 +154,36 @@ class ModuleSourceTracker:
     def _extract_from_body(
         self, tree: ast.AST, positions: Dict[str, CodePosition], prefix: str
     ) -> None:
-        """Extract positions from AST body elements."""
-        for node in getattr(tree, "body", []):
-            if isinstance(node, ast.FunctionDef):
-                self._extract_function_position(node, positions, prefix, "function")
-            elif isinstance(node, ast.AsyncFunctionDef):
-                self._extract_function_position(
+        """Extract positions from AST body elements using unified dispatch."""
+        # Define body element extractors
+        extractors = [
+            (
+                ast.FunctionDef,
+                lambda node: self._extract_function_position(
+                    node, positions, prefix, "function"
+                ),
+            ),
+            (
+                ast.AsyncFunctionDef,
+                lambda node: self._extract_function_position(
                     node, positions, prefix, "async_function"
-                )
-            elif isinstance(node, ast.ClassDef):
-                self._extract_class_position(node, positions, prefix)
+                ),
+            ),
+            (
+                ast.ClassDef,
+                lambda node: self._extract_class_position(node, positions, prefix),
+            ),
+        ]
+
+        for node in getattr(tree, "body", []):
+            self._apply_node_extractor(node, extractors)
+
+    def _apply_node_extractor(self, node: ast.AST, extractors: list) -> None:
+        """Apply the appropriate extractor for a given node type."""
+        for node_type, extractor in extractors:
+            if isinstance(node, node_type):
+                extractor(node)
+                break
 
     def _extract_function_position(
         self,
@@ -212,14 +232,23 @@ class ModuleSourceTracker:
     def _extract_special_constructs(
         self, tree: ast.AST, positions: Dict[str, CodePosition], prefix: str
     ) -> None:
-        """Extract positions for special constructs like lambdas and comprehensions."""
+        """Extract positions for special constructs using unified dispatch."""
+        # Define special construct extractors
+        extractors = [
+            (
+                ast.Lambda,
+                lambda node: self._extract_lambda_position(node, positions, prefix),
+            ),
+            (
+                (ast.ListComp, ast.DictComp, ast.SetComp, ast.GeneratorExp),
+                lambda node: self._extract_comprehension_position(
+                    node, positions, prefix
+                ),
+            ),
+        ]
+
         for node in ast.walk(tree):
-            if isinstance(node, ast.Lambda):
-                self._extract_lambda_position(node, positions, prefix)
-            elif isinstance(
-                node, (ast.ListComp, ast.DictComp, ast.SetComp, ast.GeneratorExp)
-            ):
-                self._extract_comprehension_position(node, positions, prefix)
+            self._apply_node_extractor(node, extractors)
 
     def _extract_lambda_position(
         self, node: ast.Lambda, positions: Dict[str, CodePosition], prefix: str
@@ -279,20 +308,37 @@ class ModuleSourceTracker:
         positions: Dict[str, CodePosition],
         class_name: str,
     ) -> None:
-        """Extract methods and nested classes from a class node.
+        """Extract methods and nested classes from a class node using unified dispatch.
 
         Args:
             class_node: Class AST node to search within
             positions: Dictionary to populate with positions
             class_name: Qualified name of the class
         """
+        # Define class member extractors
+        extractors = [
+            (
+                ast.FunctionDef,
+                lambda node: self._extract_method_position(
+                    node, positions, class_name, "method"
+                ),
+            ),
+            (
+                ast.AsyncFunctionDef,
+                lambda node: self._extract_method_position(
+                    node, positions, class_name, "method"
+                ),
+            ),
+            (
+                ast.ClassDef,
+                lambda node: self._extract_nested_class_position(
+                    node, positions, class_name
+                ),
+            ),
+        ]
+
         for node in class_node.body:
-            if isinstance(node, ast.FunctionDef):
-                self._extract_method_position(node, positions, class_name, "method")
-            elif isinstance(node, ast.AsyncFunctionDef):
-                self._extract_method_position(node, positions, class_name, "method")
-            elif isinstance(node, ast.ClassDef):
-                self._extract_nested_class_position(node, positions, class_name)
+            self._apply_node_extractor(node, extractors)
 
     def _extract_method_position(
         self,
