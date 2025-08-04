@@ -302,8 +302,18 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
         reload_succeeded = False
         old_source_code = self.source_by_modname.get(module_name)
         if old_source_code:
+            # Store baseline positions from the OLD source before attempting reload
+            self.code_executor.line_patcher.store_baseline_from_source(
+                module_name, old_source_code
+            )
+
             reload_succeeded = self._attempt_targeted_reload(
                 old_source_code, new_source_code, module
+            )
+        else:
+            # First time seeing this module - store current source as baseline
+            self.code_executor.line_patcher.store_baseline_from_source(
+                module_name, new_source_code
             )
 
         # Update source cache and reset state
