@@ -11,8 +11,7 @@ from __future__ import annotations
 import types
 import warnings
 from types import ModuleType, FunctionType
-from typing import Dict, List, Set, Optional, Any, Tuple, Callable, cast
-import ast
+from typing import Dict, List, Optional, Any, Tuple, Callable, cast
 
 from IPython.extensions.deduperreload.deduperreload_patching import (
     DeduperReloaderPatchingMixin,
@@ -20,12 +19,8 @@ from IPython.extensions.deduperreload.deduperreload_patching import (
 from IPython.extensions.deduperreload.line_number_tracker import (
     ModuleSourceTracker,
     CodePosition,
-    LineShift,
 )
 
-# from IPython.extensions.deduperreload.line_table_patching.line_table_patcher import (
-#     shifted_line_table,
-# )
 from IPython.extensions.deduperreload.ast_patcher import (
     ASTPatcher,
     SourceCodeExtractor,
@@ -69,7 +64,7 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
         # Temporary storage for current positions during patching
         self._current_positions: Dict[str, CodePosition] | None = None
 
-        # AST-based patcher for Python 3.11+
+        # AST-based patcher
         self.ast_patcher = ASTPatcher()
 
         # Enhanced source code extractor
@@ -164,9 +159,7 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
                 continue
 
             current_line = self.find_matching_position(obj_name, obj, current_positions)
-
-            # Get the old line number from source history
-            old_line = self._get_original_line_number(obj_name, obj, current_positions)
+            old_line = self._get_original_line_number(obj)
 
             # Patch if line number has changed
             if current_line is not None and current_line != old_line:
@@ -675,49 +668,8 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
         # The _find_function_in_namespace method handles dotted lookups correctly
         return cleaned_name
 
-    def _get_original_line_number(
-        self, obj_name: str, obj: Any, _current_positions: Dict[str, CodePosition]
-    ) -> int:
-        """Get the original line number for an object from source history.
-
-        This method avoids using obj.__code__.co_firstlineno which may have been
-        corrupted by earlier patching steps. Instead, it uses the stored positions
-        from the previous source snapshot.
-
-        Args:
-            obj_name: Name of the object
-            obj: The object itself
-            current_positions: Current positions (not used here, but available)
-
-        Returns:
-            Original line number, or co_firstlineno as fallback
-        """
-        # try:
-        # Get the module name for this object
-        if hasattr(obj, "__module__"):
-            module_name = obj.__module__
-        else:
-            module_name = None
-
-        if module_name and module_name in self.source_tracker.code_positions:
-            # Look up the object in the stored positions
-            stored_positions = self.source_tracker.code_positions[module_name]
-
-            # Try direct name match first
-            if obj_name in stored_positions:
-                original_line = stored_positions[obj_name].start_line
-                return original_line
-
-            # Try other name matching strategies
-            if hasattr(obj, "__name__"):
-                func_name = obj.__name__
-                if func_name in stored_positions:
-                    original_line = stored_positions[func_name].start_line
-                    return original_line
-
-        # Fallback to co_firstlineno... i guess this is the best we can do?
-        fallback_line = obj.__code__.co_firstlineno
-        return fallback_line
+    def _get_original_line_number(self, obj: Any) -> int:
+        return obj.__code__.co_firstlineno
 
     def _cache_patch_offset(self, obj: Any) -> None:
         """Cache the ctypes offset for faster future patching."""
@@ -921,19 +873,6 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
     def clear_patch_cache(self) -> None:
         """Clear the patch cache to free memory."""
         self.patch_cache.clear()
-
-    def get_patch_statistics(self) -> Dict[str, Any]:
-        """
-        Get statistics about patching operations.
-
-        Returns:
-            Dictionary with patching statistics
-        """
-        return {
-            "cached_offsets": len(self.patch_cache),
-            "feature_enabled": self.enable_line_number_patching,
-            "modules_tracked": len(self.source_tracker.module_snapshots),
-        }
 
     def _has_wrapper_closures(self, func: FunctionType) -> bool:
         """Detect if function has wrapper closures from decorators."""

@@ -353,9 +353,10 @@ class CodeExecutor:
             global_env.update(target_namespace.__dict__)
 
             # Compile and execute
-            compiled_code = compile(
-                func_code, "<autoreload>", "exec", dont_inherit=True
-            )
+            filename = getattr(ns, "__file__", "<autoreload>")
+            if filename and filename.endswith(".pyc"):
+                filename = filename[:-1]
+            compiled_code = compile(func_code, filename, "exec", dont_inherit=True)
             exec(compiled_code, global_env, local_env)
 
             # Extract and set the new function

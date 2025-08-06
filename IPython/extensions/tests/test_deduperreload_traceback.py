@@ -1761,6 +1761,161 @@ class TestAutoreloadTraceback(ShellFixture):
             assert "line 3" in exception_string  # __enter__ method
             assert "line 8" in exception_string  # use_context_manager
 
+    def test_traceback_multiline_lambda(self):
+        """Test line numbers for multi-line lambda expressions after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            bad_lambda = (lambda x, y, z: 
+                         x / (y - z) if x > 0 
+                         else 1 / 0)
+            
+            def call_lambda():
+                return bad_lambda(10, 2, 2)  # Will cause division by zero
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+
+        # Test original lambda line number
+        try:
+            mod.call_lambda()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 2" in exception_string
+
+        # Add content before lambda and test line tracking
+        self.write_file(
+            mod_fn,
+            """
+            import math
+            PI = 3.14159
+            
+            bad_lambda = (lambda x, y, z: 
+                         x / (y - z) if x > 0 
+                         else 1 / 0)
+            
+            def helper_func():
+                pass
+            
+            def call_lambda():
+                return bad_lambda(10, 2, 2)  # Will cause division by zero
+            """,
+        )
+        self.shell.run_code("pass")
+
+        try:
+            mod.call_lambda()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 5" in exception_string  # lambda moved down 3 lines
+
+    def test_traceback_recursive_function_error(self):
+        """Test line numbers for errors in recursive functions after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def recursive_factorial(n):
+                if n == 0:
+                    return 1 / 0  # Error in base case
+                return n * recursive_factorial(n - 1)
+            
+            def call_recursive():
+                return recursive_factorial(0)
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+
+        try:
+            mod.call_recursive()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 3" in exception_string  # error in base case
+
+        # Add content before and test line tracking
+        self.write_file(
+            mod_fn,
+            """
+            import sys
+            MAX_RECURSION = 1000
+            
+            def helper_func():
+                pass
+            
+            def recursive_countdown(n):
+                if n <= 0:
+                    return 1 / 0  # Error at end of recursion
+                return recursive_countdown(n - 1)
+            
+            def call_recursive():
+                return recursive_countdown(3)
+            """,
+        )
+        self.shell.run_code("pass")
+
+        try:
+            mod.call_recursive()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            print(f"[DEBUG] Exception string2222: {exception_string}")
+            assert "line 9" in exception_string
+
+    def test_traceback_recursive_function_error_toplevel_change(self):
+        """Test line numbers for errors in recursive functions after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def recursive_factorial(n):
+                if n == 0:
+                    return 1 / 0  # Error in base case
+                return n * recursive_factorial(n - 1)
+            
+            def call_recursive():
+                return recursive_factorial(0)
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+
+        try:
+            mod.call_recursive()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 3" in exception_string  # error in base case
+
+        # Test recursive error after several calls
+        self.write_file(
+            mod_fn,
+            """
+            def recursive_countdown(n):
+                if n <= 0:
+                    return 1 / 0  # Error at end of recursion
+                return recursive_countdown(n - 1)
+            
+            def call_recursive():
+                return recursive_countdown(3)
+            """,
+        )
+        self.shell.run_code("pass")
+        try:
+            mod.call_recursive()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            print(f"[DEBUG] Exception string1111: {exception_string}")
+            assert "line 7, in call_recursive" in exception_string
+            assert "line 3" in exception_string  # error in base case
+            # Should also see multiple recursive calls in traceback
+
 
 if __name__ == "__main__":
     unittest.main()
