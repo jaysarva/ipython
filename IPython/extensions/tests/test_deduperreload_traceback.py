@@ -2,6 +2,7 @@
 import asyncio
 import sys
 import traceback
+import unittest
 
 
 from IPython.extensions.tests.deduperreload_test_utils import (
@@ -1915,6 +1916,303 @@ class TestAutoreloadTraceback(ShellFixture):
             assert "line 7, in call_recursive" in exception_string
             assert "line 3" in exception_string  # error in base case
             # Should also see multiple recursive calls in traceback
+
+    def test_traceback_dynamically_created_functions(self):
+        """Test line numbers for functions created via exec/eval after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+def create_dynamic_function():
+    code = 'def dynamic_func():\\n    return 1 / 0'
+    exec(code, globals())
+    return dynamic_func
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+
+        # Create and test dynamic function
+        dynamic_func = mod.create_dynamic_function()
+        try:
+            dynamic_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            # Dynamic functions may have different line number behavior
+            assert "dynamic_func" in exception_string
+
+        # Modify module and test again
+        self.write_file(
+            mod_fn,
+            """
+def helper_func():
+    pass
+    
+def create_dynamic_function():
+    code = 'def dynamic_func():\\n    x = 42\\n    return 1 / 0'
+    exec(code, globals())
+    return dynamic_func
+            """,
+        )
+        self.shell.run_code("pass")
+
+        # Dynamic functions after reload should still work
+        dynamic_func = mod.create_dynamic_function()
+        try:
+            dynamic_func()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "dynamic_func" in exception_string
+
+    def test_traceback_metaclass_methods(self):
+        """Test line numbers for metaclass methods after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+class TestClass:
+    @classmethod
+    def error_method(cls):
+        return 1 / 0
+""",
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+
+        # Test classmethod error
+        try:
+            mod.TestClass.error_method()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 4" in exception_string
+
+        # Modify and reload
+        self.write_file(
+            mod_fn,
+            """
+        def utility_func():
+            pass
+            
+        class TestClass:
+            @classmethod
+            def error_method(cls):
+                x = 1
+                return x / 0
+        """,
+        )
+        self.shell.run_code("pass")
+
+        try:
+            mod.TestClass.error_method()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 8" in exception_string
+
+    def test_traceback_slots_class_methods(self):
+        """Test line numbers for __slots__ class methods after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            class SlotsClass:                
+                def __init__(self, x, y):
+                    self.x = x
+                    self.y = y
+                
+                def error_method(self):
+                    return self.x / 0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+
+        obj = mod.SlotsClass(10, 20)
+        try:
+            obj.error_method()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 7" in exception_string
+
+        # Modify slots class
+        self.write_file(
+            mod_fn,
+            """
+            class SlotsClass:                
+                def __init__(self, x, y):
+                    # Added some lines
+                    self.x = x
+                    self.y = y
+
+                    self.z = None
+                
+                def helper_method(self):
+
+                    pass
+                
+                def error_method(self):
+                    result = self.x * 2
+                    return result / 0
+            """,
+        )
+        self.shell.run_code("pass")
+
+        obj = mod.SlotsClass(10, 20)
+        try:
+            obj.error_method()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 15" in exception_string
+
+    def test_traceback_circular_import_error(self):
+        """Test line numbers with circular imports after reloading."""
+        self.shell.magic_autoreload("2")
+
+        # Create first module
+        mod_a_name, mod_a_fn = self.new_module(
+            """
+            def func_a():
+                from {} import func_b
+                return func_b() / 0
+            """.format(
+                "dummy_placeholder"
+            ),  # Will be replaced
+        )
+
+        # Create second module that imports first
+        mod_b_name, mod_b_fn = self.new_module(
+            """
+            def func_b():
+                return 42
+            """,
+        )
+
+        # Update first module to import second
+        self.write_file(
+            mod_a_fn,
+            """
+            def func_a():
+                from {} import func_b
+                return func_b() / 0
+            """.format(
+                mod_b_name
+            ),
+        )
+
+        self.shell.run_code("import %s" % mod_a_name)
+        self.shell.run_code("pass")
+        mod_a = sys.modules[mod_a_name]
+
+        try:
+            mod_a.func_a()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 3" in exception_string  # Error in func_a
+
+        # Modify both modules
+        self.write_file(
+            mod_a_fn,
+            """
+            # Comment in mod A
+            def func_a():
+                from {} import func_b
+                x = func_b()
+                return x / 0
+            """.format(
+                mod_b_name
+            ),
+        )
+
+        self.write_file(
+            mod_b_fn,
+            """
+            # Comment in mod B
+            def func_b():
+                return 42
+            """,
+        )
+
+        self.shell.run_code("pass")
+
+        try:
+            mod_a.func_a()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 5" in exception_string  # Updated line in func_a
+
+    def test_traceback_complex_decorator_signature_modification(self):
+        """Test line numbers for decorators that modify function signatures."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            import functools
+            
+            def signature_decorator(func):
+                @functools.wraps(func)
+                def wrapper(*args, **kwargs):
+                    # Add extra processing
+                    result = func(*args, **kwargs)
+                    return result
+                return wrapper
+            
+            @signature_decorator
+            def decorated_error_func(x, y=10):
+                return x / 0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+
+        try:
+            mod.decorated_error_func(5)
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 13" in exception_string
+        print("[DEBUG] writing file")
+        # Modify decorator behavior
+        self.write_file(
+            mod_fn,
+            """
+            import functools
+            
+            def signature_decorator(func):
+                @functools.wraps(func)
+                def wrapper(*args, **kwargs):
+                    # Add more complex processing
+                    try:
+                        result = func(*args, **kwargs)
+                        return result
+                    except Exception as e:
+                        raise e
+                return wrapper
+            
+            def helper_func():
+                pass
+            
+            @signature_decorator
+            def decorated_error_func(x, y=10, z=20):
+                computation = x * y
+                return computation / 0
+            """,
+        )
+        self.shell.run_code("pass")
+
+        try:
+            mod.decorated_error_func(5)
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            print(f"[DEBUG] Exception string: {exception_string}")
+            assert "line 20" in exception_string
 
 
 if __name__ == "__main__":

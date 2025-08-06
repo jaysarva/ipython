@@ -897,25 +897,21 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
         try:
             old_line = func.__code__.co_firstlineno
 
-            # For decorated functions, the new_first_line from AST tracking points to the function definition,
-            # but this function object is actually a wrapper. We need to calculate the correct wrapper position.
-            if func.__code__.co_name == "wrapper":
-                # This is a wrapper function - calculate position based on simple line delta from module changes
-                # Get the line delta from module-level changes (how many lines were added/removed at the top)
-                line_delta = self._calculate_simple_line_delta(obj_name)
-                corrected_new_line = old_line + line_delta
-            else:
-                # Use the AST-calculated position
-                line_delta = new_first_line - old_line
-                corrected_new_line = new_first_line
+            # For decorated functions, use the AST-calculated position directly.
+            # The AST tracking already provides the correct position for the function,
+            # and we should trust that calculation.
+            corrected_new_line = new_first_line
+            line_delta = new_first_line - old_line
 
             # Patch the main function first
             old_code = func.__code__
             new_code = old_code.replace(co_firstlineno=corrected_new_line)
             self.try_patch_attr(func, new_code, "__code__", new_is_value=True)
 
-            # Then recursively patch all closures with the same delta
-            self._patch_closure_hierarchy_recursive(func, line_delta, obj_name, depth=0)
+            # Then recursively patch all closures with the corrected line
+            self._patch_closure_hierarchy_recursive(
+                func, corrected_new_line, obj_name, depth=0
+            )
 
             return True
         except Exception as e:
@@ -923,7 +919,7 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
             return False
 
     def _patch_closure_hierarchy_recursive(
-        self, func: Any, line_delta: int, obj_name: str, depth: int
+        self, func: Any, corrected_new_line: int, obj_name: str, depth: int
     ) -> None:
         """Recursively patch code objects in function closures."""
         try:
@@ -936,8 +932,9 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
                             content, "__name__"
                         ):
                             # Patch this closure function
+                            # All functions in the closure chain should point to the same corrected line
                             old_code = content.__code__
-                            new_first_line = old_code.co_firstlineno + line_delta
+                            new_first_line = corrected_new_line  # Use the same corrected line for all closures
                             new_code = old_code.replace(co_firstlineno=new_first_line)
                             self.try_patch_attr(
                                 content, new_code, "__code__", new_is_value=True
@@ -946,7 +943,7 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
                             # Recursively patch deeper closures
                             self._patch_closure_hierarchy_recursive(
                                 content,
-                                line_delta,
+                                corrected_new_line,
                                 f"{obj_name}.closure[{i}]",
                                 depth + 1,
                             )
@@ -1011,3 +1008,43 @@ class LineNumberPatcher(DeduperReloaderPatchingMixin):
                 return potential_module
 
         return None
+
+    def _calculate_decorator_to_body_offset(self, obj_name: str) -> int:
+        """Calculate offset from first decorator line to function body line.
+
+        For decorated functions, the AST position points to the first decorator,
+        but we often need the position of the actual function body.
+
+        Args:
+            obj_name: Name of the decorated function object
+
+        Returns:
+            Number of lines from first decorator to function body
+        """
+        try:
+            # Extract the actual function name from obj_name
+            function_name = self._extract_function_name_from_obj_name(obj_name)
+            if not function_name:
+                return 1  # Default offset for single decorator
+
+            # Look up the function in current positions
+            if self._current_positions and function_name in self._current_positions:
+                position = self._current_positions[function_name]
+
+                # Calculate offset from decorator start to function body
+                # position.start_line = first decorator line
+                # position.original_start = function definition line
+                # We want the offset to the function body (original_start + 1)
+                decorator_start = position.start_line
+                function_body_line = (
+                    position.original_start + 1
+                )  # +1 for the actual body line
+
+                return function_body_line - decorator_start
+
+            # Fallback for most common case: single decorator
+            return 2  # @decorator\ndef func():\n  return 1/0  <- we want this line
+
+        except Exception:
+            # Safe fallback
+            return 2

@@ -254,9 +254,13 @@ class CodeExecutor:
             local_env: dict[str, Any] = {}
 
             # Get filename for proper traceback
-            filename = getattr(old_function, "__code__", None)
-            filename = filename.co_filename if filename else "<string>"
+            # Unwrap staticmethod/classmethod to get the actual function
+            actual_function = old_function
+            if isinstance(old_function, (staticmethod, classmethod)):
+                actual_function = old_function.__func__
 
+            filename = getattr(actual_function, "__code__", None)
+            filename = filename.co_filename if filename else "<string>"
             # Compile and execute
             compiled_code = compile(func_code, filename, "exec", dont_inherit=True)
             exec(compiled_code, global_env, local_env)
