@@ -322,6 +322,19 @@ class ModuleReloader:
                     elif self.deduper_reloader.maybe_reload_module(m):
                         pass
                     else:
+                        # Reset line number tracking state when falling back to default autoreload
+                        # because superreload completely replaces the module, invalidating all tracking
+                        if m and hasattr(m, "__name__"):
+                            modname = m.__name__
+                            if hasattr(self.deduper_reloader, "line_patcher"):
+                                self.deduper_reloader.line_patcher.source_tracker.clear_module(
+                                    modname
+                                )
+                            # Also clear deduperreload's own source cache since we're falling back
+                            if hasattr(self.deduper_reloader, "source_by_modname"):
+                                self.deduper_reloader.source_by_modname.pop(
+                                    modname, None
+                                )
                         superreload(m, reload, self.old_objects)
                     if py_filename in self.failed:
                         del self.failed[py_filename]
