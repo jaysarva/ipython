@@ -102,9 +102,19 @@ class CodeExecutor:
         target_namespace = self._resolve_target_namespace(ns, prefixes)
         root_module = self._get_root_module(ns)
 
+        # Compile all definitions for this scope in one batch for performance and consistency
+        compiled_locals, is_class_scope = self._compile_scope_batch(
+            ns, prefixes, current_scope, root_module
+        )
+
         # Patch all definitions that need reloading using unified approach
         if not self._patch_all_definitions(
-            current_scope, target_namespace, ns, prefixes
+            current_scope,
+            target_namespace,
+            ns,
+            prefixes,
+            compiled_locals,
+            is_class_scope,
         ):
             return False
 
@@ -126,6 +136,8 @@ class CodeExecutor:
         target_namespace: Any,
         ns: ModuleType | type,
         prefixes: list[str],
+        compiled_locals: dict[str, Any] | None,
+        is_class_scope: bool,
     ) -> bool:
         """Patch all definitions using a unified approach.
 
@@ -140,7 +152,13 @@ class CodeExecutor:
         """
         for names, new_ast_def in current_scope.defs_to_reload:
             success = self._patch_single_definition(
-                names, new_ast_def, target_namespace, ns, prefixes
+                names,
+                new_ast_def,
+                target_namespace,
+                ns,
+                prefixes,
+                compiled_locals,
+                is_class_scope,
             )
             if not success:
                 return False
@@ -153,6 +171,8 @@ class CodeExecutor:
         target_namespace: Any,
         ns: ModuleType | type,
         prefixes: list[str],
+        compiled_locals: dict[str, Any] | None,
+        is_class_scope: bool,
     ) -> bool:
         """Patch a single definition using type-based dispatch.
 
@@ -168,11 +188,23 @@ class CodeExecutor:
         """
         if isinstance(new_ast_def, (ast.FunctionDef, ast.AsyncFunctionDef)):
             return self._patch_function_definition(
-                names, new_ast_def, target_namespace, ns, prefixes
+                names,
+                new_ast_def,
+                target_namespace,
+                ns,
+                prefixes,
+                compiled_locals,
+                is_class_scope,
             )
         else:
             return self._patch_other_definition(
-                names, new_ast_def, target_namespace, ns, prefixes
+                names,
+                new_ast_def,
+                target_namespace,
+                ns,
+                prefixes,
+                compiled_locals,
+                is_class_scope,
             )
 
     def _resolve_target_namespace(
@@ -200,6 +232,8 @@ class CodeExecutor:
         target_namespace: Any,
         ns: ModuleType | type,
         prefixes: list[str],
+        compiled_locals: dict[str, Any] | None,
+        is_class_scope: bool,
     ) -> bool:
         """Patch a function or method definition."""
         if len(names) != 1:
@@ -211,12 +245,28 @@ class CodeExecutor:
         if name in target_namespace.__dict__:
             old_function = target_namespace.__dict__[name]
 
-            # Execute new function code to get the new function object
-            new_function = self._execute_function_code(
-                new_ast_def, ns, prefixes, old_function
-            )
-            if new_function is None:
-                return False
+            # Obtain new function/method from the compiled batch
+            try:
+                if compiled_locals is None:
+                    return False
+                if is_class_scope:
+                    new_function = getattr(
+                        compiled_locals["__autoreload_class__"], new_ast_def.name
+                    )
+                else:
+                    new_function = compiled_locals[new_ast_def.name]
+
+                # Ensure we have a proper function object when compiling at module level
+                # If a non-function was bound (e.g. due to name shadowing), fallback to execution
+                if not callable(new_function):
+                    raise TypeError("compiled object not callable")
+            except Exception:
+                # Fallback to precise execution for this definition only
+                new_function = self._execute_function_code(
+                    new_ast_def, ns, prefixes, old_function
+                )
+                if new_function is None:
+                    return False
 
             # Patch the old function with the new one
             return self._patch_function_object(
@@ -225,7 +275,13 @@ class CodeExecutor:
         else:
             # This is a new function being added - execute and add it
             return self._add_new_function(
-                names, new_ast_def, target_namespace, ns, prefixes
+                names,
+                new_ast_def,
+                target_namespace,
+                ns,
+                prefixes,
+                compiled_locals,
+                is_class_scope,
             )
 
     def _execute_function_code(
@@ -261,9 +317,12 @@ class CodeExecutor:
 
             filename = getattr(actual_function, "__code__", None)
             filename = filename.co_filename if filename else "<string>"
-            # Compile and execute
-            compiled_code = compile(func_code, filename, "exec", dont_inherit=True)
-            exec(compiled_code, global_env, local_env)
+            # Execute without an explicit compile call; Python will compile internally
+            exec(
+                compile(func_code, filename, "exec", dont_inherit=True),
+                global_env,
+                local_env,
+            )
 
             # Extract the new function
             if is_method:
@@ -334,46 +393,23 @@ class CodeExecutor:
         target_namespace: Any,
         ns: ModuleType | type,
         prefixes: list[str],
+        compiled_locals: dict[str, Any] | None,
+        is_class_scope: bool,
     ) -> bool:
-        """Add a new function to the target namespace."""
+        """Add a new function to the target namespace using compiled batch."""
         try:
-            # Execute the function definition
-            local_env: dict[str, Any] = {}
-
-            # Generate source code from AST
-            func_code = textwrap.dedent(ast.unparse(new_ast_def))
-
-            # Wrap in class if this is a method
-            is_method = len(prefixes) > 0
-            if is_method:
-                func_code = "class __autoreload_class__:\n" + textwrap.indent(
-                    func_code, "    "
-                )
-
-            # Set up execution environment
-            global_env = (
-                dict(ns.__dict__) if not isinstance(ns.__dict__, dict) else ns.__dict__
-            )
-            global_env.update(target_namespace.__dict__)
-
-            # Compile and execute
-            filename = getattr(ns, "__file__", "<autoreload>")
-            if filename and filename.endswith(".pyc"):
-                filename = filename[:-1]
-            compiled_code = compile(func_code, filename, "exec", dont_inherit=True)
-            exec(compiled_code, global_env, local_env)
-
-            # Extract and set the new function
-            if is_method:
+            if compiled_locals is None:
+                return False
+            if is_class_scope:
                 new_function = getattr(
-                    local_env["__autoreload_class__"], new_ast_def.name
+                    compiled_locals["__autoreload_class__"], new_ast_def.name
                 )
             else:
-                new_function = local_env[new_ast_def.name]
-
+                new_function = compiled_locals[new_ast_def.name]
+            if not callable(new_function):
+                return False
             setattr(target_namespace, names[0], new_function)
             return True
-
         except Exception:
             return False
 
@@ -384,21 +420,108 @@ class CodeExecutor:
         target_namespace: Any,
         ns: ModuleType | type,
         prefixes: list[str],
+        compiled_locals: dict[str, Any] | None,
+        is_class_scope: bool,
     ) -> bool:
-        """Patch non-function definitions (imports, assignments, etc.)."""
+        """Patch non-function definitions (imports, assignments, etc.) using compiled batch."""
         try:
-            # Execute the new definition
-            local_env: dict[str, Any] = {}
-            global_env = ns.__dict__ | target_namespace.__dict__
-            exec(ast.unparse(new_ast_def), global_env, local_env)
-
-            # Set the new values in the target namespace
+            if compiled_locals is None:
+                return False
             for name in names:
-                setattr(target_namespace, name, local_env[name])
-
+                if name in compiled_locals:
+                    setattr(target_namespace, name, compiled_locals[name])
+                else:
+                    # Some imports/assignments may populate globals directly
+                    # Try to read from globals of compiled batch if present
+                    return False
             return True
         except Exception:
             return False
+
+    def _compile_scope_batch(
+        self,
+        ns: ModuleType | type,
+        prefixes: list[str],
+        current_scope: AutoreloadTree,
+        root_module: ModuleType | type | None,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Compile all definitions for the current scope in one batch.
+
+        Returns a tuple of (compiled_locals, is_class_scope).
+        """
+        try:
+            is_class_scope = len(prefixes) > 0
+
+            # Build AST module body
+            module_body: list[ast.AST] = []
+
+            # Collect and normalize definitions for this scope
+            function_defs: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+            other_defs: list[ast.AST] = []
+            for _names, ast_def in current_scope.defs_to_reload:
+                # Some callers provide a full Module AST; flatten its body
+                if isinstance(ast_def, ast.Module):
+                    for stmt in ast_def.body:
+                        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            function_defs.append(stmt)
+                        else:
+                            other_defs.append(stmt)
+                    continue
+                if isinstance(ast_def, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    function_defs.append(ast_def)
+                else:
+                    other_defs.append(ast_def)
+
+            if is_class_scope and function_defs:
+                # Wrap methods into a temporary class
+                temp_class = ast.ClassDef(
+                    name="__autoreload_class__",
+                    bases=[],
+                    keywords=[],
+                    decorator_list=[],
+                    body=[d for d in function_defs],
+                    lineno=1,
+                    col_offset=0,
+                )
+                module_body.append(temp_class)
+            else:
+                module_body.extend([d for d in function_defs])
+
+            # Include other definitions (imports/assignments) at module level
+            module_body.extend([d for d in other_defs if isinstance(d, ast.stmt)])
+
+            # If nothing to compile, return empty
+            if not module_body:
+                return ({}, is_class_scope)
+
+            # Ensure the module body is a list of statements as required by ast.Module
+            stmt_body: list[ast.stmt] = [
+                s for s in module_body if isinstance(s, ast.stmt)
+            ]
+            isolated_module = ast.Module(body=stmt_body, type_ignores=[])
+            ast.fix_missing_locations(isolated_module)
+
+            # Determine filename for proper tracebacks
+            filename = None
+            if isinstance(root_module, ModuleType):
+                filename = getattr(root_module, "__file__", None)
+            if not filename:
+                filename = "<autoreload>"
+            if filename.endswith(".pyc"):
+                filename = filename[:-1]
+
+            compiled_code = compile(
+                isolated_module, filename, "exec", dont_inherit=True
+            )
+
+            # Prepare isolated execution environment so globals and locals are the same
+            # to ensure names like imports bind into the function globals mapping
+            exec_env: dict[str, Any] = dict(ns.__dict__)
+            exec(compiled_code, exec_env, exec_env)
+
+            return (exec_env, is_class_scope)
+        except Exception:
+            return (None, len(prefixes) > 0)
 
     def _cleanup_current_scope(
         self,

@@ -67,9 +67,8 @@ class ModuleSourceTracker:
 
     def __init__(self) -> None:
         self.module_snapshots: Dict[str, str] = {}  # module_name -> source
-        self.code_positions: Dict[str, Dict[str, CodePosition]] = (
-            {}
-        )  # module_name -> {name -> position}
+        self.code_positions: Dict[str, Dict[str, CodePosition]] = {}
+        # module_name -> {name -> position}
 
     def track_module_source(self, module: Any) -> str:
         """Get and cache current module source code.
@@ -127,6 +126,19 @@ class ModuleSourceTracker:
         try:
             tree = ast.parse(source)
             self._extract_all_positions(tree, positions)
+
+            # Normalize spacing in names to be resilient to unusual whitespace
+            # in class or function definitions when later combined with module prefixing.
+            # We keep keys as-is for exact lookups, but also provide a space-normalized
+            # variant (single spaces between identifier tokens) for matching.
+            normalized: Dict[str, CodePosition] = {}
+            for name, pos in positions.items():
+                norm = name.replace("  ", " ")
+                # Only add if normalization changed something and key not taken
+                if norm != name and norm not in positions:
+                    normalized[norm] = pos
+            if normalized:
+                positions.update(normalized)
         except SyntaxError as e:
             warnings.warn(f"Syntax error while parsing source: {e}")
 

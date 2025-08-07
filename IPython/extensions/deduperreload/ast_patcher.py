@@ -80,15 +80,26 @@ class LineNumberShifter(ast.NodeTransformer):
         Returns:
             Processed AST node with updated line numbers
         """
-        # Apply shift to start line number
-        if hasattr(node, "lineno") and node.lineno is not None:
-            shift = self._calculate_cumulative_shift(node.lineno)
-            node.lineno += shift
+        # Apply shift to start line number (type: ignore for dynamic AST attributes)
+        if hasattr(node, "lineno") and getattr(node, "lineno", None) is not None:
+            current_line = getattr(node, "lineno")  # type: ignore[attr-defined]
+            shift = self._calculate_cumulative_shift(int(current_line))
+            try:
+                setattr(node, "lineno", int(current_line) + shift)  # type: ignore[attr-defined]
+            except Exception:
+                pass
 
         # Apply shift to end line number
-        if hasattr(node, "end_lineno") and node.end_lineno is not None:
-            shift = self._calculate_cumulative_shift(node.end_lineno)
-            node.end_lineno += shift
+        if (
+            hasattr(node, "end_lineno")
+            and getattr(node, "end_lineno", None) is not None
+        ):
+            current_end_line = getattr(node, "end_lineno")  # type: ignore[attr-defined]
+            shift = self._calculate_cumulative_shift(int(current_end_line))
+            try:
+                setattr(node, "end_lineno", int(current_end_line) + shift)  # type: ignore[attr-defined]
+            except Exception:
+                pass
 
         # Continue processing child nodes
         return self.generic_visit(node)
@@ -282,55 +293,46 @@ class ASTPatcher:
         obj_name: str = "",
     ) -> types.CodeType:
         """
-        Create a new code object with corrected line numbers using AST manipulation.
+        Create a new code object with corrected line numbers without recompilation.
 
-        This is the main entry point for AST-based line number correction.
-        It parses the source code, applies line number shifts, and recompiles
-        to produce a code object with accurate line numbers.
+        We avoid any compile() calls here. Instead, we compute the adjusted
+        first line using the provided delta_map and return a code object created
+        via CodeType.replace with the new co_firstlineno. Nested function
+        adjustments are handled by the caller.
 
         Args:
             old_code: Original code object to patch
             delta_map: Line number shift mappings
-            source_code: Full source code for the module/function
-            function_name: Name of specific function to extract (optional)
+            source_code: Full source code for the module/function (unused)
+            function_name: Name of specific function to extract (unused)
             obj_name: Full object name for debugging
 
         Returns:
-            New code object with corrected line numbers
-
-        Raises:
-            SyntaxError: If source code cannot be parsed
-            CompileError: If AST cannot be compiled
+            Code object with updated co_firstlineno if needed; otherwise original
         """
-        # Validate input - old_code must be a CodeType
         if not isinstance(old_code, types.CodeType):
-            # Special handling for property objects that shouldn't reach here
             if isinstance(old_code, property):
                 raise ValueError(
                     f"Property objects should not be passed to AST patcher: {obj_name}"
                 )
             raise ValueError(f"Expected CodeType, got {type(old_code)} for {obj_name}")
+
         try:
-            # Parse source code into AST
-            tree = ast.parse(source_code, filename=old_code.co_filename)
-            if not isinstance(tree, ast.Module):
-                raise ValueError(f"Expected Module AST, got {type(tree)}")
+            # Calculate cumulative shift for this code object's first line
+            original_first_line = int(old_code.co_firstlineno)
+            cumulative_shift = 0
+            for insertion_point, delta in sorted(delta_map.items()):
+                if original_first_line >= int(insertion_point):
+                    cumulative_shift += int(delta)
 
-            # The AST already has the correct line numbers from the current source
-            # We don't need to apply additional shifts to the AST itself
+            if cumulative_shift == 0:
+                return old_code
 
-            if function_name:
-                return self._compile_specific_function(
-                    tree, old_code, function_name, obj_name
-                )
-            return old_code
-
-        except SyntaxError as e:
-            warnings.warn(f"AST parsing failed for {obj_name}: {e}")
-            raise
+            new_first_line = original_first_line + cumulative_shift
+            return old_code.replace(co_firstlineno=new_first_line)
         except Exception as e:
-            warnings.warn(f"AST patching failed for {obj_name}: {e}")
-            raise
+            warnings.warn(f"Line number adjustment failed for {obj_name}: {e}")
+            return old_code
 
     def _compile_specific_function(
         self,
@@ -339,28 +341,8 @@ class ASTPatcher:
         function_name: str,
         obj_name: str,
     ) -> types.CodeType:
-        """
-        Compile a specific function from the module AST.
-
-        For decorated functions and complex cases, it's safer to compile the entire
-        module and extract the function rather than trying to compile in isolation.
-
-        Args:
-            tree: Module AST with shifted line numbers
-            old_code: Original code object
-            function_name: Name of function to extract
-            obj_name: Full object name for debugging
-
-        Returns:
-            Code object for the specific function
-        """
-        try:
-            return self._compile_and_extract_function(
-                tree, old_code, function_name, obj_name
-            )
-        except Exception as e:
-            warnings.warn(f"Function-specific compilation failed for {obj_name}: {e}")
-            return old_code
+        """Deprecated: compilation path disabled. Returns original code."""
+        return old_code
 
     def _compile_and_extract_function(
         self,
@@ -369,30 +351,8 @@ class ASTPatcher:
         function_name: str,
         obj_name: str,
     ) -> types.CodeType:
-        """
-        Compile entire module and extract specific function code.
-
-        It compiles the entire module and then extracts the specific
-        function's code object.
-
-        Args:
-            tree: Module AST
-            old_code: Original code object
-            function_name: Name of function to extract
-            obj_name: Full object name for debugging
-
-        Returns:
-            Code object for the specific function
-        """
-        try:
-            return self._compile_module_and_extract_function(
-                tree, old_code, function_name, obj_name
-            )
-        except Exception as e:
-            warnings.warn(
-                f"Module compilation and extraction failed for {obj_name}: {e}"
-            )
-            return old_code
+        """Deprecated: compilation path disabled. Returns original code."""
+        return old_code
 
     def _compile_module_and_extract_function(
         self,
@@ -401,40 +361,8 @@ class ASTPatcher:
         function_name: str,
         obj_name: str,
     ) -> types.CodeType:
-        """Extract function AST and compile it directly without executing entire module.
-
-        Args:
-            tree: Module AST
-            old_code: Original code object
-            function_name: Function name to extract
-            obj_name: Object name for debugging
-
-        Returns:
-            Extracted function code object
-
-        Raises:
-            Exception: If compilation or extraction fails
-        """
-        # Extract the specific function AST node
-        extractor = FunctionExtractor(function_name)
-        extractor.visit(tree)
-
-        if not extractor.found_function:
-            raise ValueError(f"Function {function_name} not found in AST")
-
-        func_node = extractor.found_function
-
-        # Handle different types of functions
-        if extractor.found_class_context and isinstance(
-            func_node, (ast.FunctionDef, ast.AsyncFunctionDef)
-        ):
-            # Check if this is a property method (fget, fset, fdel) - use obj_name for detection
-            if any(obj_name.endswith(suffix) for suffix in [".fget", ".fset", ".fdel"]):
-                return self._compile_property_method(func_node, old_code, obj_name)
-            else:
-                return self._compile_class_method(func_node, old_code, function_name)
-        else:
-            return self._compile_isolated_function(func_node, old_code, function_name)
+        """Deprecated: compilation path disabled. Returns original code."""
+        return old_code
 
     def _compile_class_method(
         self,
@@ -442,11 +370,8 @@ class ASTPatcher:
         old_code: types.CodeType,
         function_name: str,
     ) -> types.CodeType:
-        """Compile a class method wrapped in a temporary class."""
-        # All class methods should be compiled with full context approach
-        return self._compile_class_method_with_context(
-            func_node, old_code, function_name
-        )
+        """Deprecated: compilation path disabled. Returns original code."""
+        return old_code
 
     def _compile_class_method_with_context(
         self,
@@ -454,37 +379,8 @@ class ASTPatcher:
         old_code: types.CodeType,
         function_name: str,
     ) -> types.CodeType:
-        """Compile a class method with full module and class context."""
-        # We need to get the full module AST and extract the class containing this method
-        # The extractor already found the class context for us
-        extractor = FunctionExtractor(function_name)
-
-        # Parse the module again to get full context
-        # We need the module source to get the full class definition with inheritance
-        module_source = self._get_module_source_from_code(old_code)
-        if not module_source:
-            # Fall back to simple compilation if we can't get module source
-            return self._compile_simple_class_method(func_node, old_code, function_name)
-
-        try:
-            full_tree = ast.parse(module_source, filename=old_code.co_filename)
-
-            # Find the class containing our method
-            class_node = self._find_class_containing_method(full_tree, function_name)
-            if not class_node:
-                # Fall back to simple compilation
-                return self._compile_simple_class_method(
-                    func_node, old_code, function_name
-                )
-
-            # Compile the full class with proper context
-            return self._compile_full_class_method(
-                class_node, func_node, old_code, function_name, module_source
-            )
-
-        except Exception:
-            # Fall back to simple compilation on any error
-            return self._compile_simple_class_method(func_node, old_code, function_name)
+        """Deprecated: compilation path disabled. Returns original code."""
+        return old_code
 
     def _get_module_source_from_code(self, code_obj: types.CodeType) -> str | None:
         """Try to get module source code from a code object."""
@@ -544,64 +440,10 @@ class ASTPatcher:
         function_name: str,
         module_source: str,
     ) -> types.CodeType:
-        """Compile a method from its full class context with inheritance support."""
-        # Create a module containing only the class and its dependencies
-        isolated_module = ast.Module(body=[class_node], type_ignores=[])
-        ast.fix_missing_locations(isolated_module)
+        """Deprecated: compilation path disabled. Returns original code."""
+        return old_code
 
-        # Compile the class
-        compiled_class = compile(isolated_module, old_code.co_filename, "exec")
-
-        # Execute with module namespace to get all context (variables, imports, etc.)
-        namespace = self._build_module_namespace(module_source, old_code.co_filename)
-        exec(compiled_class, namespace)
-
-        # Get the method from the compiled class
-        class_obj = namespace[class_node.name]
-        method = getattr(class_obj, func_node.name)
-
-        return method.__code__
-
-    def _build_module_namespace(self, module_source: str, filename: str) -> dict:
-        """Build a namespace containing all module-level definitions."""
-        try:
-            # Parse the full module
-            tree = ast.parse(module_source, filename=filename)
-
-            # Create namespace with builtins
-            namespace = {"__builtins__": __builtins__}
-
-            # Execute all top-level definitions except the class we're compiling
-            # This gives us imports, global variables, other classes, etc.
-            for node in tree.body:
-                if isinstance(
-                    node,
-                    (
-                        ast.Import,
-                        ast.ImportFrom,
-                        ast.Assign,
-                        ast.AugAssign,
-                        ast.AnnAssign,
-                        ast.FunctionDef,
-                        ast.AsyncFunctionDef,
-                    ),
-                ):
-                    # Execute individual statements to build namespace
-                    single_stmt = ast.Module(body=[node], type_ignores=[])
-                    ast.fix_missing_locations(single_stmt)
-                    compiled_stmt = compile(single_stmt, filename, "exec")
-                    exec(compiled_stmt, namespace)
-                elif isinstance(node, ast.ClassDef):
-                    # Include other classes for inheritance
-                    single_stmt = ast.Module(body=[node], type_ignores=[])
-                    ast.fix_missing_locations(single_stmt)
-                    compiled_stmt = compile(single_stmt, filename, "exec")
-                    exec(compiled_stmt, namespace)
-
-            return namespace
-        except Exception:
-            # Return minimal namespace on error
-            return {"__builtins__": __builtins__}
+    # Removed _build_module_namespace in favor of a single full-module compile.
 
     def _compile_simple_class_method(
         self,
@@ -609,34 +451,8 @@ class ASTPatcher:
         old_code: types.CodeType,
         function_name: str,
     ) -> types.CodeType:
-        """Compile a simple class method (no super() calls) using temporary class."""
-        # Create a temporary class wrapper (similar to code_execution.py approach)
-        temp_class = ast.ClassDef(
-            name="__autoreload_class__",
-            bases=[],
-            keywords=[],
-            decorator_list=[],
-            body=[func_node],
-            lineno=1,
-            col_offset=0,
-        )
-
-        # Create module with the temporary class
-        isolated_module = ast.Module(body=[temp_class], type_ignores=[])
-        ast.fix_missing_locations(isolated_module)
-
-        # Compile the class
-        compiled_class = compile(isolated_module, old_code.co_filename, "exec")
-
-        # Execute with empty namespace (sufficient for simple class methods)
-        namespace: dict[str, Any] = {}
-        exec(compiled_class, namespace)
-
-        # Get the method from the temporary class
-        temp_class_obj = namespace["__autoreload_class__"]
-        method = getattr(temp_class_obj, func_node.name)
-
-        return method.__code__
+        """Deprecated: compilation path disabled. Returns original code."""
+        return old_code
 
     def _compile_property_method(
         self,
@@ -644,110 +460,14 @@ class ASTPatcher:
         old_code: types.CodeType,
         obj_name: str,
     ) -> types.CodeType:
-        """Compile a property method (fget, fset, fdel) wrapped in a temporary class."""
-        # We need to extract the property getter function
-
-        # Add the @property decorator to the function for proper compilation
-        property_decorator = ast.Name(id="property", ctx=ast.Load())
-        # Set decorator line number
-        property_decorator.lineno = func_node.lineno - 1 if func_node.lineno > 1 else 1
-        property_decorator.col_offset = 0
-
-        decorated_func = ast.FunctionDef(
-            name=func_node.name,
-            args=func_node.args,
-            body=func_node.body,
-            decorator_list=[property_decorator],
-            returns=func_node.returns,
-            type_comment=func_node.type_comment,
-            lineno=func_node.lineno,
-            col_offset=func_node.col_offset,
-        )
-
-        # Copy end_lineno if it exists
-        if hasattr(func_node, "end_lineno"):
-            decorated_func.end_lineno = func_node.end_lineno
-        if hasattr(func_node, "end_col_offset"):
-            decorated_func.end_col_offset = func_node.end_col_offset
-
-        # Create a temporary class wrapper
-        temp_class = ast.ClassDef(
-            name="__autoreload_class__",
-            bases=[],
-            keywords=[],
-            decorator_list=[],
-            body=[decorated_func],
-            lineno=1,
-            col_offset=0,
-        )
-
-        # Create module with the temporary class
-        isolated_module = ast.Module(body=[temp_class], type_ignores=[])
-        ast.fix_missing_locations(isolated_module)
-
-        # Compile the class
-        compiled_class = compile(isolated_module, old_code.co_filename, "exec")
-
-        # Execute with empty namespace
-        namespace: dict[str, Any] = {}
-        exec(compiled_class, namespace)
-
-        # Get the property from the temporary class
-        temp_class_obj = namespace["__autoreload_class__"]
-        prop = getattr(temp_class_obj, func_node.name)
-
-        # Extract the appropriate component based on obj_name suffix
-        if obj_name.endswith(".fget"):
-            return prop.fget.__code__
-        elif obj_name.endswith(".fset"):
-            if prop.fset:
-                return prop.fset.__code__
-            else:
-                raise ValueError(f"Property {obj_name} has no setter")
-        elif obj_name.endswith(".fdel"):
-            if prop.fdel:
-                return prop.fdel.__code__
-            else:
-                raise ValueError(f"Property {obj_name} has no deleter")
-        else:
-            raise ValueError(f"Unknown property component: {obj_name}")
+        """Deprecated: compilation path disabled. Returns original code."""
+        return old_code
 
     def _compile_isolated_function(
         self, func_node: ast.AST, old_code: types.CodeType, function_name: str
     ) -> types.CodeType:
-        """Compile a function in isolation."""
-        # Create a new module containing only the function
-        if isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Assign)):
-            isolated_module = ast.Module(body=[func_node], type_ignores=[])
-        else:
-            raise ValueError(f"Unsupported function node type: {type(func_node)}")
-        ast.fix_missing_locations(isolated_module)
-
-        # Compile the isolated function
-        compiled_func = compile(isolated_module, old_code.co_filename, "exec")
-
-        # Extract the function code object from the compiled module
-        if isinstance(func_node, ast.Assign) and isinstance(
-            func_node.value, ast.Lambda
-        ):
-            # For lambda assignments, look for the lambda code object
-            for const in compiled_func.co_consts:
-                if isinstance(const, types.CodeType) and const.co_name == "<lambda>":
-                    return const
-        else:
-            # For regular functions, look for function name match
-            if isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                expected_name = func_node.name
-            else:
-                expected_name = function_name
-            for const in compiled_func.co_consts:
-                if isinstance(const, types.CodeType) and const.co_name == expected_name:
-                    return const
-
-        # If we can't find it in constants, raise exception
-        raise ValueError(
-            f"Could not extract compiled code for function {function_name}"
-        )
+        """Deprecated: compilation path disabled. Returns original code."""
+        return old_code
 
     def create_enhanced_delta_map(
         self,

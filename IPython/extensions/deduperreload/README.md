@@ -8,7 +8,7 @@ The DeduperReload extension provides intelligent, selective code reloading for I
 
 - **Selective Reloading**: Only patches changed functions/classes, preserving object identity
 - **AST-Based Analysis**: Compares code structure, not just timestamps
-- **Line Number Accuracy**: Maintains correct traceback line numbers after reloading
+- **Line Number Accuracy**: Maintains correct traceback line numbers after reloading via AST-based position tracking and targeted `co_firstlineno` updates (no AST recompilation for line fixups)
 - **Decorator Dependency Tracking**: Automatically reloads functions that use modified decorators
 - **Fallback Safety**: Falls back to traditional autoreload for complex changes
 - **CPython Optimization**: Uses ctypes for efficient in-place patching
@@ -25,8 +25,8 @@ The DeduperReload extension provides intelligent, selective code reloading for I
 
 ### Supporting Components
 
-6. **ASTPatcher** - AST manipulation for line number correction (Python 3.11+)
-7. **LineNumberTracker** - Tracks source code positions and calculates line shifts
+6. **ASTPatcher** - Computes line-number delta maps and performs safe `CodeType.replace` updates; AST recompilation is not used for line fixups in the current implementation
+7. **LineNumberTracker** - Tracks module source code and parses AST positions for functions, classes, and methods
 8. **DeduperReloaderPatchingMixin** - Low-level ctypes-based object patching utilities
 
 ## Integration with IPython Autoreload
@@ -87,10 +87,10 @@ graph TD
     DD -->|No| EE[Complete - Return True]
     DD -->|Yes| FF[LineNumberPatcher.update_all_code_object_line_numbers]
     FF --> GG[ModuleSourceTracker.parse_all_positions]
-    GG --> HH[Calculate line number shifts]
+    GG --> HH[Augment positions with module-prefixed keys]
     HH --> II[Find ALL affected code objects]
-    II --> JJ[ASTPatcher.patch_line_numbers]
-    JJ --> KK[Use ctypes to update line tables]
+    II --> JJ[Compute co_firstlineno deltas]
+    JJ --> KK[Patch code objects via attribute replacement]
     KK --> EE
     
     %% Fallback Flow
@@ -260,10 +260,17 @@ reloader.enable_line_number_patching = False  # Disable for performance
 
 ### Common Issues
 
-1. **Complex Changes Not Reloading**: Check if deduperreload fell back to traditional autoreload
-2. **Line Number Mismatches**: Enable line number patching if disabled
-3. **Decorator Dependencies**: Ensure decorator functions are properly tracked
-4. **Memory Leaks**: Rarely, ctypes patching may create reference cycles
+1. **Complex Changes Not Reloading**: Check if deduperreload fell back to traditional autoreload.
+2. **Line Number Mismatches**: Ensure line number patching is enabled and module source was available.
+3. **Decorator Dependencies**: Ensure decorator functions are properly tracked.
+4. **Dynamic `<string>` Code**: For synthetic `<string>` code objects, module names are inferred from fully-qualified object names and matched against cached source snapshots.
+5. **Sourceless Modules**: For modules without `__file__`, cached source is used if available.
+
+### Documented Hacks and Compatibility Shims
+
+- **Module-Prefixed Position Augmentation**: After parsing AST positions, we add `module_name.<name>` keys to the positions map. This guarantees exact matching for fully-qualified names like `tmpmod_xyz.Class.method` without resorting to fragile heuristics.
+- **Name Normalization in Tracker**: We also include space-normalized duplicates of keys (collapsing double spaces) to tolerate unusual spacing in definitions used in tests. Original keys are preserved.
+- **`co_lines()` Optionality**: When computing observed sizes for nested code objects, we guard access to `co_lines()` to preserve compatibility across Python versions.
 
 ### Debug Mode
 ```python
@@ -281,7 +288,11 @@ DeduperReload uses ctypes to directly modify Python object structures in memory,
 The system parses Python source code into Abstract Syntax Trees and performs structural comparisons to identify changes. This approach is more reliable than timestamp-based checking and enables intelligent change classification.
 
 ### Line Number Correction
-When functions change size, all subsequent line numbers in the module shift. The line number patcher tracks these changes and updates ALL affected code objects to maintain traceback accuracy.
+When functions change size, subsequent code objects in the module may need `co_firstlineno` adjusted. The line number patcher:
+
+- Parses current positions using AST.
+- Augments the positions map with module-prefixed keys so fully-qualified names resolve precisely (e.g., `tmpmod_abc.MyClass.method`).
+- Updates `co_firstlineno` on code objects as needed, including nested functions via recursive processing of `co_consts`.
 
 ### Decorator Dependency Tracking
 The system builds a dependency graph of decorator usage, ensuring that when a decorator function changes, all functions using that decorator are also reloaded automatically.

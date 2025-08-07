@@ -2214,6 +2214,534 @@ class TestClass:
             print(f"[DEBUG] Exception string: {exception_string}")
             assert "line 20" in exception_string
 
+    def test_traceback_namedtuple_dataclass_errors(self):
+        """Test line numbers for namedtuple and dataclass method errors."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            from collections import namedtuple
+            from dataclasses import dataclass
+
+            Point = namedtuple('Point', ['x', 'y'])
+
+            @dataclass
+            class DataPoint:
+                x: int
+                y: int
+
+                def error_method(self):
+                    return self.x / 0
+
+            def create_namedtuple_error():
+                p = Point(10, 20)
+                return p.x / 0  # Error using namedtuple
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+
+        # Test dataclass method error
+        dp = mod.DataPoint(5, 10)
+        try:
+            dp.error_method()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 12" in exception_string
+
+        # Test namedtuple related error
+        try:
+            mod.create_namedtuple_error()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 16" in exception_string
+
+        # Modify and test again
+        self.write_file(
+            mod_fn,
+            """
+            from collections import namedtuple
+            from dataclasses import dataclass
+
+            # Add some content
+            VERSION = "1.0"
+
+            Point = namedtuple('Point', ['x', 'y'])
+
+            @dataclass
+            class DataPoint:
+                x: int
+                y: int
+                z: int = 0
+
+                def helper_method(self):
+                    pass
+
+                def error_method(self):
+                    computation = self.x * self.y
+                    return computation / 0
+
+            def create_namedtuple_error():
+                p = Point(10, 20)
+                result = p.x + p.y
+                return result / 0  # Error using namedtuple
+            """,
+        )
+        self.shell.run_code("pass")
+
+        dp = mod.DataPoint(5, 10)
+        try:
+            dp.error_method()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 20" in exception_string
+
+        try:
+            mod.create_namedtuple_error()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 25" in exception_string
+
+    def test_traceback_function_annotations_line_numbers(self):
+        """Test line numbers for functions with complex annotations after reloading."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            from typing import List, Dict, Optional, Callable
+
+            def annotated_error_func(
+                x: int,
+                y: Optional[str] = None,
+                z: Dict[str, List[int]] = None
+            ) -> int:
+                return x / 0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+
+        try:
+            mod.annotated_error_func(10)
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 8" in exception_string
+
+        # Modify with even more complex annotations
+        self.write_file(
+            mod_fn,
+            """
+            from typing import List, Dict, Optional, Callable, Union, Tuple
+
+            def helper_func() -> None:
+                pass
+
+            def complex_annotated_func(
+                x: Union[int, float],
+                y: Optional[Callable[[int, str], bool]] = None,
+                z: Dict[str, List[Tuple[int, str]]] = None,
+                *args: str,
+                **kwargs: Dict[str, int]
+            ) -> Optional[Union[int, str]]:
+                result = x * 2
+                return result / 0
+            """,
+        )
+        self.shell.run_code("pass")
+
+        try:
+            mod.complex_annotated_func(10)
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 14" in exception_string
+
+    def test_traceback_multiline_string_literals_line_counts(self):
+        """Test line numbers with multiline strings affecting line counts."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            '''
+            MULTILINE_STRING = """
+            This is a multiline string
+            that spans several lines
+            and might affect line counting
+            """
+
+            def function_after_multiline():
+                return 1 / 0
+            ''',
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+
+        try:
+            mod.function_after_multiline()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 8" in exception_string
+
+        # Add more multiline strings and complex structures
+        self.write_file(
+            mod_fn,
+            '''
+            FIRST_STRING = """
+            First multiline string
+            with multiple lines
+            """
+
+            SECOND_STRING = f"""
+            Second multiline string
+            with f-string formatting
+            and more lines
+            """
+
+            # Triple quote with different quote style
+            THIRD_STRING = \'''
+            Third string using single quotes
+            also multiline
+            \'''
+
+            def function_after_multiple_multiline():
+                x = 42
+                return x / 0
+            ''',
+        )
+        self.shell.run_code("pass")
+
+        try:
+            mod.function_after_multiple_multiline()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 20" in exception_string
+
+    def test_traceback_cached_property_functools_decorators(self):
+        """Test line numbers with cached_property and functools decorators."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            import functools
+            try:
+                from functools import cached_property
+            except ImportError:
+                # Fallback for older Python versions
+                def cached_property(func):
+                    return property(functools.lru_cache()(func))
+
+            class CachedClass:
+                @cached_property
+                def cached_error_prop(self):
+                    return 1 / 0
+
+                @functools.lru_cache(maxsize=128)
+                def cached_method(self):
+                    return 2 / 0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+
+        obj = mod.CachedClass()
+
+        # Test cached property
+        try:
+            _ = obj.cached_error_prop
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 12" in exception_string
+
+        # Test functools.lru_cache decorated method
+        try:
+            obj.cached_method()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 16" in exception_string
+
+        # Modify and test line tracking
+        self.write_file(
+            mod_fn,
+            """
+            import functools
+            try:
+                from functools import cached_property
+            except ImportError:
+                # Fallback for older Python versions
+                def cached_property(func):
+                    return property(functools.lru_cache()(func))
+
+            def helper_function():
+                pass
+
+            class CachedClass:
+                def __init__(self):
+                    self.data = []
+
+                @cached_property
+                def cached_error_prop(self):
+                    x = 42
+                    return x / 0
+
+                @functools.lru_cache(maxsize=128)
+                def cached_method(self):
+                    y = 100
+                    return y / 0
+            """,
+        )
+        self.shell.run_code("pass")
+
+        obj = mod.CachedClass()
+
+        try:
+            _ = obj.cached_error_prop
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 19" in exception_string
+
+        try:
+            obj.cached_method()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 24" in exception_string
+
+    def test_traceback_new_init_method_tracking(self):
+        """Test line numbers for __new__ and __init__ method errors."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            class CustomClass:
+                def __new__(cls, value):
+                    if value < 0:
+                        return 1 / 0  # Error in __new__
+                    return super().__new__(cls)
+
+                def __init__(self, value):
+                    if value > 100:
+                        self.value = 1 / 0  # Error in __init__
+                    self.value = value
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+
+        # Test __new__ error
+        try:
+            mod.CustomClass(-5)
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 4" in exception_string
+
+        # Test __init__ error
+        try:
+            mod.CustomClass(150)
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 9" in exception_string
+
+        # Modify class structure
+        self.write_file(
+            mod_fn,
+            """
+            def utility_function():
+                pass
+
+            class CustomClass:
+                class_var = "test"
+
+                def __new__(cls, value):
+                    # Added validation
+                    if not isinstance(value, int):
+                        raise TypeError("Value must be int")
+                    if value < 0:
+                        return 1 / 0  # Error in __new__
+                    return super().__new__(cls)
+
+                def __init__(self, value):
+                    # Added more logic
+                    self.created_at = "now"
+                    if value > 100:
+                        self.value = 1 / 0  # Error in __init__
+                    self.value = value
+            """,
+        )
+        self.shell.run_code("pass")
+
+        try:
+            mod.CustomClass(-5)
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            print(f"[DEBUG] Exception string: {exception_string}")
+            assert "line 12" in exception_string  # updated __new__ line
+
+        try:
+            mod.CustomClass(150)
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 19" in exception_string  # updated __init__ line
+
+    def test_traceback_mixed_indentation_edge_cases(self):
+        """Test line numbers with mixed indentation and edge cases."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def normal_function():
+                if True:
+                    x = 1
+                    if True:
+                        y = 2
+                        if True:
+                            return 1 / 0  # Deeply nested
+                return None
+
+            # Function with unusual spacing
+            def   spaced_function(  ):
+                return 2 / 0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+
+        try:
+            mod.normal_function()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 7" in exception_string
+
+        try:
+            mod.spaced_function()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 12" in exception_string
+
+        # Modify with even more edge cases
+        self.write_file(
+            mod_fn,
+            """
+            # Comment line
+
+            def normal_function():
+                # More nesting
+                if True:
+                    x = 1
+                    if True:
+                        y = 2
+                        if True:
+                            z = 3
+                            if True:
+                                return 1 / 0  # Even deeper
+                return None
+
+            # Function with lots of whitespace
+            def   very_spaced_function(  x  ,  y  =  10  ):
+                return x / 0
+
+            class   SpacedClass  :
+                def   spaced_method( self ):
+                    return 3 / 0
+            """,
+        )
+        self.shell.run_code("pass")
+
+        try:
+            mod.normal_function()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 12" in exception_string
+
+        try:
+            mod.very_spaced_function(5)
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 17" in exception_string
+
+        obj = mod.SpacedClass()
+        try:
+            obj.spaced_method()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            print(f"[DEBUG] Exception string: {exception_string}")
+            assert "line 21" in exception_string
+
+    def test_traceback_mod_other_functions(self):
+        """Test line numbers with mixed indentation and edge cases."""
+        self.shell.magic_autoreload("2")
+        mod_name, mod_fn = self.new_module(
+            """
+            def normal_function():
+                if True:
+                    x = 1
+                    if True:
+                        y = 2
+                        if True:
+                            return 1 / 0  # Deeply nested
+                return None
+
+            # Function with unusual spacing
+            def   spaced_function(  ):
+                return 2 / 0
+            """,
+        )
+        self.shell.run_code("import %s" % mod_name)
+        self.shell.run_code("pass")
+        mod = sys.modules[mod_name]
+
+        try:
+            mod.normal_function()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 7" in exception_string
+
+        try:
+            mod.spaced_function()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 12" in exception_string
+
+        # Modify with even more edge cases
+        self.write_file(
+            mod_fn,
+            """
+            def normal_function():
+                return None
+            class   SpacedClass  :
+                def   spaced_method( self ):
+                    return 3 / 0
+            """,
+        )
+        self.shell.run_code("pass")
+
+        obj = mod.SpacedClass()
+        try:
+            obj.spaced_method()
+            assert False
+        except ZeroDivisionError:
+            exception_string = traceback.format_exc()
+            assert "line 5" in exception_string
+
 
 if __name__ == "__main__":
     unittest.main()

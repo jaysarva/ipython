@@ -10,7 +10,6 @@ identify what has changed, and patch only the changed components in-place.
 
 from __future__ import annotations
 import ast
-import contextlib
 import os
 import platform
 import sys
@@ -167,10 +166,13 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
         """
         file_path = get_module_file_name(module)
 
-        # Skip if no file or is a third-party package
+        # Skip if no file
+        if file_path is None:
+            return ""
+
+        # Skip third-party packages or unreadable files
         if (
-            file_path is None
-            or "site-packages" in file_path
+            "site-packages" in file_path
             or "dist-packages" in file_path
             or not os.access(file_path, os.R_OK)
         ):
@@ -343,20 +345,18 @@ class DeduperReloader(DeduperReloaderPatchingMixin):
         except Exception:
             return False
 
-        # Attempt the reload process
+        # Attempt the reload process with clear, linear control flow
         try:
-            with contextlib.suppress():
-                # Build dependency graph for decorator handling
-                self.dependency_manager.build_dependency_graph(new_module_ast)
+            # Build dependency graph for decorator handling
+            self.dependency_manager.build_dependency_graph(new_module_ast)
 
-                # Check if we can handle the changes
-                if (
-                    self.detect_autoreload(old_module_ast, new_module_ast)
-                    and self._check_dependents()
-                    and self._patch_namespace(module)
-                ):
-                    return True
+            # Check if we can handle the changes and apply patches
+            can_target_reload = self.detect_autoreload(old_module_ast, new_module_ast)
+            if not can_target_reload:
+                return False
+            self._check_dependents()
+            if not self._patch_namespace(module):
+                return False
+            return True
         except Exception:
-            pass
-
-        return False
+            return False
