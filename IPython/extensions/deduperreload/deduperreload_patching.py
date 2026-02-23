@@ -1,6 +1,5 @@
 from __future__ import annotations
 import ctypes
-import sys
 from typing import Any
 
 NOT_FOUND: object = object()
@@ -13,8 +12,8 @@ POINTER_N_BYTES = ctypes.sizeof(ctypes.c_void_p)
 class DeduperReloaderPatchingMixin:
     @staticmethod
     def infer_field_offset(
-        obj: object,
-        field: str,
+            obj: object,
+            field: str,
     ) -> int:
         field_value = getattr(obj, field, NOT_FOUND)
         if field_value is NOT_FOUND:
@@ -25,23 +24,19 @@ class DeduperReloaderPatchingMixin:
             return -1
         ret = -1
         for offset in range(1, _MAX_FIELD_SEARCH_OFFSET):
-            if (
-                ctypes.cast(
-                    obj_addr + POINTER_N_BYTES * offset, ctypes.POINTER(ctypes.c_void_p)
-                ).contents.value
-                == field_addr
-            ):
+            if (ctypes.cast(obj_addr + POINTER_N_BYTES * offset,
+                            ctypes.POINTER(ctypes.c_void_p)).contents.value == field_addr):
                 ret = offset
                 break
         return ret
 
     @classmethod
     def try_write_readonly_attr(
-        cls,
-        obj: object,
-        field: str,
-        new_value: object,
-        offset: int | None = None,
+            cls,
+            obj: object,
+            field: str,
+            new_value: object,
+            offset: int | None = None,
     ) -> None:
         prev_value = getattr(obj, field, NOT_FOUND)
         if prev_value is NOT_FOUND:
@@ -54,27 +49,24 @@ class DeduperReloaderPatchingMixin:
         if new_value is NULL:
             new_value_addr: int | None = 0
         else:
-            new_value_addr = ctypes.c_void_p.from_buffer(
-                ctypes.py_object(new_value)
-            ).value
+            new_value_addr = ctypes.c_void_p.from_buffer(ctypes.py_object(new_value)).value
         if obj_addr is None or new_value_addr is None:
             return
         if prev_value is not None:
             ctypes.pythonapi.Py_DecRef(ctypes.py_object(prev_value))
         if new_value not in (None, NULL):
             ctypes.pythonapi.Py_IncRef(ctypes.py_object(new_value))
-        ctypes.cast(
-            obj_addr + POINTER_N_BYTES * offset, ctypes.POINTER(ctypes.c_void_p)
-        ).contents.value = new_value_addr
+        ctypes.cast(obj_addr + POINTER_N_BYTES * offset,
+                    ctypes.POINTER(ctypes.c_void_p)).contents.value = new_value_addr
 
     @classmethod
     def try_patch_readonly_attr(
-        cls,
-        old: object,
-        new: object,
-        field: str,
-        new_is_value: bool = False,
-        offset: int = -1,
+            cls,
+            old: object,
+            new: object,
+            field: str,
+            new_is_value: bool = False,
+            offset: int = -1,
     ) -> None:
         old_value = getattr(old, field, NOT_FOUND)
         new_value = new if new_is_value else getattr(new, field, NOT_FOUND)
@@ -92,12 +84,12 @@ class DeduperReloaderPatchingMixin:
 
     @classmethod
     def try_patch_attr(
-        cls,
-        old: object,
-        new: object,
-        field: str,
-        new_is_value: bool = False,
-        offset: int = -1,
+            cls,
+            old: object,
+            new: object,
+            field: str,
+            new_is_value: bool = False,
+            offset: int = -1,
     ) -> None:
         try:
             setattr(old, field, new if new_is_value else getattr(new, field))
@@ -105,22 +97,13 @@ class DeduperReloaderPatchingMixin:
             cls.try_patch_readonly_attr(old, new, field, new_is_value, offset)
 
     @classmethod
-    def patch_function(
-        cls, to_patch_to: Any, to_patch_from: Any, is_method: bool
-    ) -> None:
+    def patch_function(cls, to_patch_to: Any, to_patch_from: Any, is_method: bool) -> None:
         new_closure = []
-        for freevar, closure_val in zip(
-            to_patch_from.__code__.co_freevars or [], to_patch_from.__closure__ or []
-        ):
-            if (
-                callable(closure_val.cell_contents)
-                and freevar in to_patch_to.__code__.co_freevars
-            ):
+        for freevar, closure_val in zip(to_patch_from.__code__.co_freevars or [],
+                                        to_patch_from.__closure__ or []):
+            if freevar == "__class__" and freevar in to_patch_to.__code__.co_freevars:
                 new_closure.append(
-                    to_patch_to.__closure__[
-                        to_patch_to.__code__.co_freevars.index(freevar)
-                    ]
-                )
+                    to_patch_to.__closure__[to_patch_to.__code__.co_freevars.index(freevar)])
             else:
                 new_closure.append(closure_val)
         # lambdas may complain if there is more than one freevar

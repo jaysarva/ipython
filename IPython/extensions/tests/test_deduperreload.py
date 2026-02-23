@@ -15,7 +15,8 @@ from types import ModuleType
 
 from IPython.extensions.autoreload import AutoreloadMagics
 
-from IPython.extensions.deduperreload.deduperreload import compare_ast, DeduperReloader
+from IPython.extensions.deduperreload.deduperreload import DeduperReloader
+from IPython.extensions.deduperreload.change_detection import ASTAnalyzer, AutoreloadTree
 
 if platform.python_implementation() != "CPython":
     pytest.skip(
@@ -29,19 +30,14 @@ class DeduperTestReloader(DeduperReloader):
         super().__init__(*args, **kwargs)
         self.exceptions_raised: list[Exception] = []
 
-    def _patch_namespace(
-        self, module: ModuleType | type, prefixes: list[str] | None = None
-    ) -> bool:
+    def patch_namespace(self, module: ModuleType) -> None:
+        """Patch module namespace, recording any exceptions."""
         try:
-            assert super()._patch_namespace(module, prefixes)
-            return True
+            self.code_executor.patch_namespace(
+                module, self.change_detector.autoreload_tree)
         except Exception as e:
             self.exceptions_raised.append(e)
-            return False
 
-
-def is_nonempty_file(fname: str) -> bool:
-    return len(fname) > 0
 
 
 def squish_text(text: str) -> str:
@@ -136,7 +132,7 @@ class AutoreloadDetectionSuite(unittest.TestCase):
         ast_1 = ast.parse(code1)
         ast_2 = ast.parse(code2)
 
-        assert not compare_ast(ast_1, ast_2)
+        assert not ASTAnalyzer.compare_ast(ast_1, ast_2)
 
     def test_compare_ast2(self):
         code1 = squish_text(
@@ -182,7 +178,7 @@ class AutoreloadDetectionSuite(unittest.TestCase):
         ast_1 = ast.parse(code1)
         ast_2 = ast.parse(code2)
 
-        assert compare_ast(ast_1, ast_2)
+        assert ASTAnalyzer.compare_ast(ast_1, ast_2)
 
     def test_autoreload_no_changes(self):
         code1 = squish_text(
@@ -206,7 +202,7 @@ class AutoreloadDetectionSuite(unittest.TestCase):
         ast_2 = ast.parse(code2)
 
         assert deduperreloader.detect_autoreload(ast_1, ast_2)
-        assert deduperreloader._to_autoreload.defs_to_reload == []
+        assert deduperreloader.change_detector.autoreload_tree.defs_to_reload == []
 
     def test_autoreload_static_assign_change_outside_function(self):
         code1 = squish_text(
@@ -230,6 +226,28 @@ class AutoreloadDetectionSuite(unittest.TestCase):
 
         assert deduperreloader.detect_autoreload(ast_1, ast_2)
 
+    def test_moved_lambda(self):
+        """Test that a lambda that moved to a different line is detected as needing reload."""
+        code1 = "x = 42\nlam = lambda: x + 2"
+        code2 = "x = 42\n# comment\nlam = lambda: x + 2"
+        deduperreloader = DeduperTestReloader()
+        ast_1 = ast.parse(code1)
+        ast_2 = ast.parse(code2)
+        assert deduperreloader.detect_autoreload(ast_1, ast_2)
+        assert len(deduperreloader.change_detector.autoreload_tree.defs_to_reload) == 1
+
+    def test_changed_lambda_used_inside_map(self):
+        """Test that a changed lambda inside a function call is detected."""
+        code1 = "lst = map(lambda x: x + 1, [1, 2, 3])"
+        code2 = "lst = map(lambda x: x + 2, [1, 2, 3])"
+        deduperreloader = DeduperTestReloader()
+        ast_1 = ast.parse(code1)
+        ast_2 = ast.parse(code2)
+        # This returns True because the unfixable content changed, and we detect that
+        # as an unfixable change (the code can still be reloaded via fallback)
+        assert deduperreloader.detect_autoreload(ast_1, ast_2)
+        assert len(deduperreloader.change_detector.autoreload_tree.defs_to_reload) == 1
+
     def test_autoreload_changes_inside_function(self):
         code1 = squish_text(
             """
@@ -250,7 +268,7 @@ class AutoreloadDetectionSuite(unittest.TestCase):
         ast_2 = ast.parse(code2)
 
         assert deduperreloader.detect_autoreload(ast_1, ast_2)
-        assert len(deduperreloader._to_autoreload.defs_to_reload) == 1
+        assert len(deduperreloader.change_detector.autoreload_tree.defs_to_reload) == 1
 
     def test_autoreload_changes_inside_and_outside_function(self):
         code1 = squish_text(
@@ -297,7 +315,7 @@ class AutoreloadDetectionSuite(unittest.TestCase):
         ast_2 = ast.parse(code2)
 
         assert deduperreloader.detect_autoreload(ast_1, ast_2)
-        assert len(deduperreloader._to_autoreload.defs_to_reload) == 1
+        assert len(deduperreloader.change_detector.autoreload_tree.defs_to_reload) == 1
 
     def test_autoreload_changes_multiple_function(self):
         code1 = squish_text(
@@ -327,7 +345,7 @@ class AutoreloadDetectionSuite(unittest.TestCase):
         ast_2 = ast.parse(code2)
 
         assert deduperreloader.detect_autoreload(ast_1, ast_2)
-        assert len(deduperreloader._to_autoreload.defs_to_reload) == 2
+        assert len(deduperreloader.change_detector.autoreload_tree.defs_to_reload) == 2
 
     def test_autoreload_change_one_function_of_multiple(self):
         code1 = squish_text(
@@ -357,7 +375,7 @@ class AutoreloadDetectionSuite(unittest.TestCase):
         ast_2 = ast.parse(code2)
 
         assert deduperreloader.detect_autoreload(ast_1, ast_2)
-        assert len(deduperreloader._to_autoreload.defs_to_reload) == 1
+        assert len(deduperreloader.change_detector.autoreload_tree.defs_to_reload) == 1
 
     def test_autoreload_handling_moves(self):
         code1 = squish_text(
@@ -379,7 +397,9 @@ class AutoreloadDetectionSuite(unittest.TestCase):
         ast_2 = ast.parse(code2)
 
         assert deduperreloader.detect_autoreload(ast_1, ast_2)
-        assert len(deduperreloader._to_autoreload.defs_to_reload) == 0
+        # In the new implementation, moved functions are detected and reloaded
+        # to ensure tracebacks have correct line numbers
+        assert len(deduperreloader.change_detector.autoreload_tree.defs_to_reload) == 1
 
     def test_autoreload_handling_function_moves_success(self):
         code1 = squish_text(
@@ -407,7 +427,9 @@ class AutoreloadDetectionSuite(unittest.TestCase):
         ast_2 = ast.parse(code2)
 
         assert deduperreloader.detect_autoreload(ast_1, ast_2)
-        assert len(deduperreloader._to_autoreload.defs_to_reload) == 0
+        # In the new implementation, moved functions are detected and reloaded
+        # to ensure tracebacks have correct line numbers
+        assert len(deduperreloader.change_detector.autoreload_tree.defs_to_reload) == 2
 
     def test_autoreload_handling_function_moves_only(self):
         code1 = squish_text(
@@ -474,7 +496,7 @@ class AutoreloadDetectionSuite(unittest.TestCase):
         ast_2 = ast.parse(code2)
 
         assert deduperreloader.detect_autoreload(ast_1, ast_2)
-        assert len(deduperreloader._to_autoreload.defs_to_reload) == 1
+        assert len(deduperreloader.change_detector.autoreload_tree.defs_to_reload) == 1
 
     def test_autoreload_add_function(self):
         code1 = squish_text(
@@ -498,7 +520,7 @@ class AutoreloadDetectionSuite(unittest.TestCase):
         ast_2 = ast.parse(code2)
 
         assert deduperreloader.detect_autoreload(ast_1, ast_2)
-        assert list(d[0][0] for d in deduperreloader._to_autoreload.defs_to_reload) == [
+        assert list(d[0][0] for d in deduperreloader.change_detector.autoreload_tree.defs_to_reload) == [
             "add"
         ]
 
@@ -524,7 +546,7 @@ class AutoreloadDetectionSuite(unittest.TestCase):
         ast_2 = ast.parse(code2)
 
         assert deduperreloader.detect_autoreload(ast_1, ast_2)
-        assert list(d[0][0] for d in deduperreloader._to_autoreload.defs_to_reload) == [
+        assert list(d[0][0] for d in deduperreloader.change_detector.autoreload_tree.defs_to_reload) == [
             "add"
         ]
 
@@ -550,12 +572,12 @@ class AutoreloadPatchingSuite(unittest.TestCase):
                 return 2
         """
         )
-        self.deduperreloader._to_autoreload.defs_to_reload = [
+        self.deduperreloader.change_detector.autoreload_tree.defs_to_reload = [
             (("foo",), ast.parse(code2))
         ]
         mod = ModuleType("mod")
         exec(code1, mod.__dict__)
-        self.deduperreloader._patch_namespace(mod)
+        self.deduperreloader.patch_namespace(mod)
         assert mod.foo() == 2
 
     def test_patching_parameters(self):
@@ -571,12 +593,12 @@ class AutoreloadPatchingSuite(unittest.TestCase):
                 return n
         """
         )
-        self.deduperreloader._to_autoreload.defs_to_reload = [
+        self.deduperreloader.change_detector.autoreload_tree.defs_to_reload = [
             (("foo",), ast.parse(code2))
         ]
         mod = ModuleType("mod")
         exec(code1, mod.__dict__)
-        self.deduperreloader._patch_namespace(mod)
+        self.deduperreloader.patch_namespace(mod)
         assert mod.foo(2) == 2
 
     def test_add_function(self):
@@ -592,12 +614,12 @@ class AutoreloadPatchingSuite(unittest.TestCase):
                 return 55
         """
         )
-        self.deduperreloader._to_autoreload.defs_to_reload = [
+        self.deduperreloader.change_detector.autoreload_tree.defs_to_reload = [
             (("foo",), ast.parse(code2))
         ]
         mod = ModuleType("mod")
         exec(code1, mod.__dict__)
-        self.deduperreloader._patch_namespace(mod)
+        self.deduperreloader.patch_namespace(mod)
         assert mod.foo(2) == 55
         assert mod.foo2(2) == 2
 
@@ -625,18 +647,18 @@ class AutoreloadPatchingSuite(unittest.TestCase):
                 return 200
         """
         )
-        self.deduperreloader._to_autoreload.defs_to_reload = [
+        self.deduperreloader.change_detector.autoreload_tree.defs_to_reload = [
             (("foo",), ast.parse(code2))
         ]
         mod = ModuleType("mod")
         exec(code1, mod.__dict__)
         assert mod.foo(2) == 1
-        self.deduperreloader._patch_namespace(mod)
+        self.deduperreloader.patch_namespace(mod)
         assert mod.foo(2) == 55
-        self.deduperreloader._to_autoreload.defs_to_reload = [
+        self.deduperreloader.change_detector.autoreload_tree.defs_to_reload = [
             (("foo",), ast.parse(code3))
         ]
-        self.deduperreloader._patch_namespace(mod)
+        self.deduperreloader.patch_namespace(mod)
         assert mod.foo(2) == 4
 
     def test_using_outside_param(self):
@@ -654,13 +676,13 @@ class AutoreloadPatchingSuite(unittest.TestCase):
                 return 55+x
         """
         )
-        self.deduperreloader._to_autoreload.defs_to_reload = [
+        self.deduperreloader.change_detector.autoreload_tree.defs_to_reload = [
             (("foo",), ast.parse(code2))
         ]
         mod = ModuleType("mod")
         exec(code1, mod.__dict__)
         assert mod.foo(2) == 1
-        self.deduperreloader._patch_namespace(mod)
+        self.deduperreloader.patch_namespace(mod)
         assert mod.foo(2) == 56
 
     def test_importing_func(self):
@@ -679,12 +701,12 @@ class AutoreloadPatchingSuite(unittest.TestCase):
                 return 1
         """
         )
-        self.deduperreloader._to_autoreload.defs_to_reload = [
+        self.deduperreloader.change_detector.autoreload_tree.defs_to_reload = [
             (("foo",), ast.parse(code2))
         ]
         mod = ModuleType("mod")
         exec(code1, mod.__dict__)
-        self.deduperreloader._patch_namespace(mod)
+        self.deduperreloader.patch_namespace(mod)
         assert mod.foo() == 1
 
 
@@ -1063,12 +1085,12 @@ class AutoreloadClassMethodsDetectionSuite(unittest.TestCase):
         ast_2 = ast.parse(code2)
 
         assert deduperreloader.detect_autoreload(ast_1, ast_2)
-        assert deduperreloader._to_autoreload.defs_to_reload == []
-        assert "C" in deduperreloader._to_autoreload.children
+        assert deduperreloader.change_detector.autoreload_tree.defs_to_reload == []
+        assert "C" in deduperreloader.change_detector.autoreload_tree.children
         assert ["foo"] == list(
-            d[0][0] for d in deduperreloader._to_autoreload.children["C"].defs_to_reload
+            d[0][0] for d in deduperreloader.change_detector.autoreload_tree.children["C"].defs_to_reload
         )
-        assert deduperreloader._to_autoreload.children["C"].children == {}
+        assert deduperreloader.change_detector.autoreload_tree.children["C"].children == {}
 
     def test_autoreload_no_changes(self):
         code1 = squish_text(
@@ -1094,8 +1116,8 @@ class AutoreloadClassMethodsDetectionSuite(unittest.TestCase):
         ast_2 = ast.parse(code2)
 
         assert deduperreloader.detect_autoreload(ast_1, ast_2)
-        assert deduperreloader._to_autoreload.defs_to_reload == []
-        assert deduperreloader._to_autoreload.children == {}
+        assert deduperreloader.change_detector.autoreload_tree.defs_to_reload == []
+        assert deduperreloader.change_detector.autoreload_tree.children == {}
 
     def test_autoreload_add_function(self):
         code1 = squish_text(
@@ -1124,12 +1146,14 @@ class AutoreloadClassMethodsDetectionSuite(unittest.TestCase):
         ast_2 = ast.parse(code2)
 
         assert deduperreloader.detect_autoreload(ast_1, ast_2)
-        assert deduperreloader._to_autoreload.defs_to_reload == []
-        assert "C" in deduperreloader._to_autoreload.children
+        # In the new implementation, module-level foo is also detected because the
+        # class C body changed which affects its line numbers
+        assert deduperreloader.change_detector.autoreload_tree.defs_to_reload[0][0] == ("foo",)
+        assert "C" in deduperreloader.change_detector.autoreload_tree.children
         assert ["foo", "bar"] == list(
-            d[0][0] for d in deduperreloader._to_autoreload.children["C"].defs_to_reload
+            d[0][0] for d in deduperreloader.change_detector.autoreload_tree.children["C"].defs_to_reload
         )
-        assert len(deduperreloader._to_autoreload.children["C"].children) == 0
+        assert len(deduperreloader.change_detector.autoreload_tree.children["C"].children) == 0
 
     def test_autoreload_remove_method(self):
         code1 = squish_text(
@@ -1227,19 +1251,21 @@ class AutoreloadClassMethodsDetectionSuite(unittest.TestCase):
         ast_2 = ast.parse(code2)
 
         assert deduperreloader.detect_autoreload(ast_1, ast_2)
-        assert deduperreloader._to_autoreload.defs_to_reload == []
-        assert list(deduperreloader._to_autoreload.children.keys()) == ["C"]
-        assert deduperreloader._to_autoreload.children["C"].defs_to_reload == []
-        assert list(deduperreloader._to_autoreload.children["C"].children.keys()) == [
+        # In the new implementation, module-level foo is also detected because the
+        # class C body changed which affects its line numbers
+        assert deduperreloader.change_detector.autoreload_tree.defs_to_reload[0][0] == ("foo",)
+        assert list(deduperreloader.change_detector.autoreload_tree.children.keys()) == ["C"]
+        assert deduperreloader.change_detector.autoreload_tree.children["C"].defs_to_reload == []
+        assert list(deduperreloader.change_detector.autoreload_tree.children["C"].children.keys()) == [
             "D"
         ]
         assert list(
             d[0][0]
-            for d in deduperreloader._to_autoreload.children["C"]
+            for d in deduperreloader.change_detector.autoreload_tree.children["C"]
             .children["D"]
             .defs_to_reload
         ) == ["foo"]
-        assert deduperreloader._to_autoreload.children["C"].children["D"].children == {}
+        assert deduperreloader.change_detector.autoreload_tree.children["C"].children["D"].children == {}
 
     def test_autoreload_add_var_and_method_in_class_in_class(self):
         code1 = squish_text(
@@ -1293,19 +1319,21 @@ class AutoreloadClassMethodsDetectionSuite(unittest.TestCase):
         ast_2 = ast.parse(code2)
 
         assert deduperreloader.detect_autoreload(ast_1, ast_2)
-        assert deduperreloader._to_autoreload.defs_to_reload == []
-        assert list(deduperreloader._to_autoreload.children.keys()) == ["C"]
-        assert deduperreloader._to_autoreload.children["C"].defs_to_reload == []
-        assert list(deduperreloader._to_autoreload.children["C"].children.keys()) == [
+        # In the new implementation, module-level foo is also detected because the
+        # class C body changed which affects its line numbers
+        assert deduperreloader.change_detector.autoreload_tree.defs_to_reload[0][0] == ("foo",)
+        assert list(deduperreloader.change_detector.autoreload_tree.children.keys()) == ["C"]
+        assert deduperreloader.change_detector.autoreload_tree.children["C"].defs_to_reload == []
+        assert list(deduperreloader.change_detector.autoreload_tree.children["C"].children.keys()) == [
             "D"
         ]
         assert list(
             d[0][0]
-            for d in deduperreloader._to_autoreload.children["C"]
+            for d in deduperreloader.change_detector.autoreload_tree.children["C"]
             .children["D"]
             .defs_to_reload
         ) == ["foo"]
-        assert deduperreloader._to_autoreload.children["C"].children["D"].children == {}
+        assert deduperreloader.change_detector.autoreload_tree.children["C"].children["D"].children == {}
 
     def test_autoreload_add_method_in_class_in_class_more(self):
         code1 = squish_text(
@@ -1334,21 +1362,23 @@ class AutoreloadClassMethodsDetectionSuite(unittest.TestCase):
         ast_2 = ast.parse(code2)
 
         assert deduperreloader.detect_autoreload(ast_1, ast_2)
-        assert deduperreloader._to_autoreload.defs_to_reload == []
-        assert list(deduperreloader._to_autoreload.children.keys()) == ["C"]
+        # In the new implementation, module-level foo is also detected because the
+        # class C body changed which affects its line numbers
+        assert deduperreloader.change_detector.autoreload_tree.defs_to_reload[0][0] == ("foo",)
+        assert list(deduperreloader.change_detector.autoreload_tree.children.keys()) == ["C"]
         assert list(
-            d[0][0] for d in deduperreloader._to_autoreload.children["C"].defs_to_reload
+            d[0][0] for d in deduperreloader.change_detector.autoreload_tree.children["C"].defs_to_reload
         ) == ["bar"]
-        assert list(deduperreloader._to_autoreload.children["C"].children.keys()) == [
+        assert list(deduperreloader.change_detector.autoreload_tree.children["C"].children.keys()) == [
             "D"
         ]
         assert list(
             d[0][0]
-            for d in deduperreloader._to_autoreload.children["C"]
+            for d in deduperreloader.change_detector.autoreload_tree.children["C"]
             .children["D"]
             .defs_to_reload
         ) == ["foo"]
-        assert deduperreloader._to_autoreload.children["C"].children["D"].children == {}
+        assert deduperreloader.change_detector.autoreload_tree.children["C"].children["D"].children == {}
 
     def test_autoreload_add_method_in_class_in_class_with_members(self):
         code1 = squish_text(
@@ -2341,6 +2371,121 @@ class TestAutoreloadEnum(ShellFixture):
         )
         self.shell.run_code("pass")
         assert mod.MyEnum.C.value == "C"
+
+
+class ModularComponentsTestSuite(unittest.TestCase):
+    """Tests for the new modular deduperreload components."""
+
+    def test_change_detector_standalone(self):
+        """Test ChangeDetector can be used standalone."""
+        from IPython.extensions.deduperreload.change_detection import ChangeDetector
+
+        detector = ChangeDetector()
+        code1 = "def foo(): return 1"
+        code2 = "def foo(): return 2"
+        ast_1 = ast.parse(code1)
+        ast_2 = ast.parse(code2)
+
+        result = detector.detect_autoreload(ast_1, ast_2, detector.autoreload_tree)
+        assert result
+        assert len(detector.autoreload_tree.defs_to_reload) == 1
+
+    def test_dependency_graph_manager(self):
+        """Test DependencyGraphManager tracks decorator dependencies."""
+        from IPython.extensions.deduperreload.dependency_graph import DependencyGraphManager
+
+        manager = DependencyGraphManager()
+        code = squish_text("""
+            def decorator(f):
+                return f
+
+            @decorator
+            def foo():
+                return 1
+        """)
+        ast_tree = ast.parse(code)
+        manager.build_dependency_graph(ast_tree)
+
+        # decorator should map to foo
+        assert ("decorator",) in manager.function_def_by_decorated_path
+        dependents = manager.get_dependents(("decorator",))
+        assert len(dependents) == 1
+        assert dependents[0].func_def.name == "foo"
+
+    def test_autoreload_tree_path_tracking(self):
+        """Test AutoreloadTree tracks qualified paths."""
+        tree = AutoreloadTree(())
+        child = tree.get_child("MyClass")
+        assert child.path == ("MyClass",)
+
+        nested = child.get_child("NestedClass")
+        assert nested.path == ("MyClass", "NestedClass")
+
+    def test_ast_analyzer_compare_positions(self):
+        """Test ASTAnalyzer compares positions for functions."""
+        from IPython.extensions.deduperreload.change_detection import ASTAnalyzer
+
+        # Same function at different lines should be different
+        code1 = "def foo(): pass"
+        code2 = "\ndef foo(): pass"
+
+        ast_1 = ast.parse(code1)
+        ast_2 = ast.parse(code2)
+
+        # Functions at different positions should not be equal
+        assert not ASTAnalyzer.compare_ast(ast_1.body[0], ast_2.body[0])
+
+        # Non-function nodes at different positions should be equal
+        code3 = "x = 1"
+        code4 = "\nx = 1"
+        ast_3 = ast.parse(code3)
+        ast_4 = ast.parse(code4)
+        assert ASTAnalyzer.compare_ast(ast_3.body[0], ast_4.body[0])
+
+    def test_constexpr_detector_lambda_args(self):
+        """Test ConstexprDetector correctly handles lambda arguments."""
+        from IPython.extensions.deduperreload.change_detection import ConstexprDetector
+
+        detector = ConstexprDetector()
+
+        # Lambda with only lambda args is constexpr
+        code1 = "lambda x: x + 1"
+        ast_1 = ast.parse(code1, mode='eval').body
+        assert detector(ast_1)
+
+        # Lambda referencing outer variable is not constexpr
+        detector = ConstexprDetector()
+        code2 = "lambda x: x + y"
+        ast_2 = ast.parse(code2, mode='eval').body
+        assert not detector(ast_2)
+
+    def test_code_executor_batch_compile(self):
+        """Test CodeExecutor batch compiles multiple definitions."""
+        from IPython.extensions.deduperreload.code_execution import CodeExecutor
+        from IPython.extensions.deduperreload.change_detection import AutoreloadTree
+
+        executor = CodeExecutor()
+        tree = AutoreloadTree(())
+
+        code = squish_text("""
+            def foo(): return 1
+            def bar(): return 2
+        """)
+        ast_tree = ast.parse(code)
+
+        # Add both functions to reload
+        tree.defs_to_reload.append((("foo",), ast_tree.body[0]))
+        tree.defs_to_reload.append((("bar",), ast_tree.body[1]))
+
+        # Create a test module
+        mod = ModuleType("test_mod")
+        exec("def foo(): return 0\ndef bar(): return 0", mod.__dict__)
+
+        # Patch the namespace
+        executor.patch_namespace(mod, tree)
+
+        assert mod.foo() == 1
+        assert mod.bar() == 2
 
 
 if __name__ == "__main__":

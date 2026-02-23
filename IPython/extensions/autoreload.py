@@ -320,9 +320,11 @@ class ModuleReloader:
                         )
                     # if not using autoload, check if deduperreload is viable for this module
                     elif self.deduper_reloader.maybe_reload_module(m):
+                        print("DEBUG: Using deduperreload")
                         pass
                     else:
                         superreload(m, reload, self.old_objects)
+                        print("DEBUG: Using superreload")
                     if py_filename in self.failed:
                         del self.failed[py_filename]
                 except:
